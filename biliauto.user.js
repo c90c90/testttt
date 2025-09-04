@@ -1,13 +1,15 @@
 // ==UserScript==
 // @name         B站直播主播信息显示
 // @namespace    http://tampermonkey.net/
-// @version      1.2
+// @version      1.3
 // @description  在B站直播页面显示主播签约状态和繁星主播状态
 // @author       9
 // @match        https://live.bilibili.com/p/eden/area-tags*
-// @match        https://live.bilibili.com/*
 // @match        https://api.live.bilibili.com/xlive/mcn-interface/v1/mcn_mng/SearchAnchor*
-// @match        https://space.bilibili.com/*
+// @include      /^https:\/\/live\.bilibili\.com\/\d+$/
+// @include      /^https:\/\/live\.bilibili\.com\/\d+\?.+$/
+// @include      /^https:\/\/space\.bilibili\.com\/\d+$/
+// @include      /^https:\/\/space\.bilibili\.com\/\d+\?.+$/
 // @grant        GM_xmlhttpRequest
 // @run-at       document-end
 // ==/UserScript==
@@ -37,7 +39,7 @@
             overflow-y: auto !important;
             box-sizing: border-box !important;
         }
-        
+
         /* 详细信息标题栏 */
         .anchor-detail-header {
             display: flex !important;
@@ -47,7 +49,7 @@
             padding-bottom: 8px !important;
             border-bottom: 1px solid #eee !important;
         }
-        
+
         /* 关闭按钮 */
         .anchor-detail-close {
             background: #f0f0f0 !important;
@@ -62,29 +64,29 @@
             font-size: 14px !important;
             color: #666 !important;
         }
-        
+
         .anchor-detail-close:hover {
             background: #e0e0e0 !important;
         }
-        
+
         .anchor-detail-title {
             font-weight: bold !important;
             color: #333 !important;
             margin-bottom: 10px !important;
             font-size: 15px !important;
         }
-        
+
         .anchor-detail-item {
             margin-bottom: 8px !important;
             color: #666 !important;
         }
-        
+
         .star-level-info {
             font-weight: bold !important;
             color: #ff6b35 !important;
             font-size: 14px !important;
         }
-        
+
         .contract-period {
             background-color: #f8f9fa !important;
             padding: 8px 12px !important;
@@ -93,13 +95,13 @@
             border-left: 4px solid #4CAF50 !important;
             font-size: 13px !important;
         }
-        
+
         .new-anchor-info {
             font-weight: bold !important;
             color: #2196F3 !important;
             font-size: 14px !important;
         }
-        
+
         .status-badge {
             display: inline-block !important;
             margin-right: 8px !important;
@@ -110,24 +112,24 @@
             font-weight: bold !important;
             color: white !important;
         }
-        
+
         .status-signed {
             background-color: #005f03ff !important;
         }
-        
+
         .status-unsigned {
             background-color: #FF5722 !important;
         }
-        
+
         .status-star {
             background-color: #ffd900ff !important;
             color: #333 !important;
         }
-        
+
         .status-normal {
             background-color: #006f9bff !important;
         }
-        
+
         .status-new {
             background-color: #63cc00ff !important;
         }
@@ -198,28 +200,28 @@
     function createDetailedInfo(anchorInfo) {
         const container = document.createElement('div');
         container.className = 'anchor-detail-info';
-        
+
         let content = '';
-        
+
         // 添加标题栏
         content += `<div class="anchor-detail-header">
             <span style="font-weight: bold; color: #333;">主播信息</span>
             <button class="anchor-detail-close" onclick="this.parentElement.parentElement.remove();">×</button>
         </div>`;
-        
+
         // 添加基础状态标签
         content += `<div style="margin-bottom: 12px;">`;
         content += `<span class="status-badge ${anchorInfo.is_signed ? 'status-signed' : 'status-unsigned'}">${anchorInfo.is_signed ? '已签约' : '未签约'}</span>`;
         content += `<span class="status-badge ${anchorInfo.is_star_anchor === 1 ? 'status-star' : 'status-normal'}">${anchorInfo.is_star_anchor === 1 ? '繁星主播' : '普通主播'}</span>`;
-        if (anchorInfo.is_new_anchor === 1 || anchorInfo.is_new_anchor === 2) {
+        if (anchorInfo.is_new_anchor === 1) {
             content += `<span class="status-badge status-new">新人</span>`;
         }
         content += `</div>`;
-        
+
         // 如果是繁星主播，显示详细信息
         if (anchorInfo.is_star_anchor === 1) {
             content += `<div class="anchor-detail-title">🌟 繁星主播详细信息</div>`;
-            
+
             // 根据star_level显示对应的星级
             let starLevelText = '';
             switch(anchorInfo.star_level) {
@@ -235,9 +237,9 @@
                 default:
                     starLevelText = `未知星级：${anchorInfo.star_level}`;
             }
-            
+
             content += `<div class="anchor-detail-item star-level-info">当前星级：${starLevelText}</div>`;
-            
+
             // 显示合约期信息
             if (anchorInfo.star_metrics && anchorInfo.star_metrics.length > 0) {
                 content += `<div style="margin-top: 12px; margin-bottom: 8px; font-weight: bold; color: #555;">合约期信息：</div>`;
@@ -246,16 +248,16 @@
                 });
             }
         }
-        
+
         // 如果是新人主播，显示有效开播天数
-        if (anchorInfo.is_new_anchor === 1 || anchorInfo.is_new_anchor === 2) {
+        if (anchorInfo.is_new_anchor === 1) {
             if (anchorInfo.is_star_anchor === 1) {
                 content += '<div style="margin: 12px 0; border-top: 1px solid #ddd;"></div>';
             }
             content += `<div class="anchor-detail-title">🆕 新人主播信息</div>`;
             content += `<div class="anchor-detail-item new-anchor-info">有效开播天数：${anchorInfo.valid_live_day}天</div>`;
         }
-        
+
         container.innerHTML = content;
         return container;
     }
@@ -270,20 +272,20 @@
         container.style.display = 'block';
         container.style.marginTop = '3px';
         container.style.lineHeight = '1';
-        
+
         // 签约状态标签
         const signedBadge = document.createElement('span');
         signedBadge.className = `status-badge ${isSigned ? 'status-signed' : 'status-unsigned'}`;
         signedBadge.textContent = isSigned ? '已签约' : '未签约';
-        
+
         // 繁星主播状态标签
         const starBadge = document.createElement('span');
         starBadge.className = `status-badge ${isStarAnchor ? 'status-star' : 'status-normal'}`;
         starBadge.textContent = isStarAnchor ? '繁星主播' : '普通主播';
-        
+
         container.appendChild(signedBadge);
         container.appendChild(starBadge);
-        
+
         // 新主播状态标签 - 只有新主播才显示
         if (isNewAnchor) {
             const newBadge = document.createElement('span');
@@ -291,7 +293,7 @@
             newBadge.textContent = '新人';
             container.appendChild(newBadge);
         }
-        
+
         return container;
     }
 
@@ -326,7 +328,7 @@
         try {
             // 获取主播信息
             const response = await fetchAnchorInfo(roomId);
-            
+
             if (response.code === 0 && response.data.items && response.data.items.length > 0) {
                 const anchorInfo = response.data.items[0];
                 const isSigned = anchorInfo.is_signed;
@@ -338,14 +340,14 @@
                 if (nameElement) {
                     // 创建状态标签（仅在分类页面显示）
                     const statusBadges = createStatusBadge(isSigned, isStarAnchor, isNewAnchor);
-                    
+
                     // 给状态标签添加房间号标识
                     statusBadges.setAttribute('data-room-id', roomId);
-                    
+
                     // 查找合适的插入位置
                     // 尝试插入到名字元素的父容器的父容器中（卡片内容区域）
                     let insertTarget = nameElement.parentElement;
-                    
+
                     // 如果父容器存在，尝试找到更合适的容器
                     if (insertTarget && insertTarget.parentElement) {
                         // 检查是否有更大的容器可以插入
@@ -354,7 +356,7 @@
                             insertTarget = cardContentContainer;
                         }
                     }
-                    
+
                     if (insertTarget) {
                         insertTarget.appendChild(statusBadges);
                     }
@@ -371,11 +373,11 @@
     function processAllLiveCards() {
         // 查找所有直播卡片
         const liveCards = document.querySelectorAll('a.Item_card-item_vf59q, .index_item_JSGkw a[href*="live.bilibili.com"]');
-        
+
         liveCards.forEach(card => {
             processLiveCard(card);
         });
-        
+
         // 清理已删除卡片对应的缓存
         cleanupProcessedCards();
     }
@@ -384,7 +386,7 @@
     function cleanupProcessedCards() {
         const currentRoomIds = new Set();
         const liveCards = document.querySelectorAll('a.Item_card-item_vf59q, .index_item_JSGkw a[href*="live.bilibili.com"]');
-        
+
         liveCards.forEach(card => {
             const linkElement = card.querySelector('a[href*="live.bilibili.com"]') || card;
             if (linkElement && linkElement.href) {
@@ -394,7 +396,7 @@
                 }
             }
         });
-        
+
         // 移除不再存在的房间号
         for (const roomId of processedCards) {
             if (!currentRoomIds.has(roomId)) {
@@ -406,13 +408,13 @@
     // 创建观察器来监听DOM变化
     const observer = new MutationObserver((mutations) => {
         let shouldProcess = false;
-        
+
         mutations.forEach((mutation) => {
             if (mutation.type === 'childList') {
                 mutation.addedNodes.forEach((node) => {
                     if (node.nodeType === Node.ELEMENT_NODE) {
                         // 检查是否有新的直播卡片添加
-                        if (node.matches && (node.matches('a.Item_card-item_vf59q') || 
+                        if (node.matches && (node.matches('a.Item_card-item_vf59q') ||
                             node.matches('.index_item_JSGkw') ||
                             node.querySelector('a[href*="live.bilibili.com"]'))) {
                             shouldProcess = true;
@@ -421,7 +423,7 @@
                 });
             }
         });
-        
+
         if (shouldProcess) {
             // 延迟执行，确保DOM完全加载
             setTimeout(processAllLiveCards, 500);
@@ -449,14 +451,14 @@
         try {
             // 获取主播信息
             const response = await fetchAnchorInfoByUid(uid);
-            
+
             if (response.code === 0 && response.data.items && response.data.items.length > 0) {
                 const anchorInfo = response.data.items[0];
 
                 // 创建详细信息显示
                 const detailedInfo = createDetailedInfo(anchorInfo);
                 detailedInfo.setAttribute('data-uid', uid);
-                
+
                 // 直接添加到页面body中
                 document.body.appendChild(detailedInfo);
             }
@@ -486,14 +488,14 @@
         try {
             // 获取主播信息
             const response = await fetchAnchorInfo(roomId);
-            
+
             if (response.code === 0 && response.data.items && response.data.items.length > 0) {
                 const anchorInfo = response.data.items[0];
 
                 // 创建详细信息显示
                 const detailedInfo = createDetailedInfo(anchorInfo);
                 detailedInfo.setAttribute('data-room-id', roomId);
-                
+
                 // 直接添加到页面body中
                 document.body.appendChild(detailedInfo);
             }
@@ -508,7 +510,7 @@
             // 个人空间页面
             setTimeout(() => {
                 processSpacePage();
-                
+
                 // 定期检查（防止动态加载内容）
                 setInterval(processSpacePage, 2000);
             }, 1000);
@@ -516,7 +518,7 @@
             // 直播间页面
             setTimeout(() => {
                 processLiveRoomPage();
-                
+
                 // 定期检查（防止动态加载内容）
                 setInterval(processLiveRoomPage, 2000);
             }, 1000);
@@ -524,7 +526,7 @@
             // 直播分类页面
             setTimeout(() => {
                 processAllLiveCards();
-                
+
                 // 定期检查新的卡片（防止某些情况下观察器失效）
                 setInterval(processAllLiveCards, 3000);
             }, 1000);
