@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         B站直播主播信息显示
 // @namespace    http://tampermonkey.net/
-// @version      1.3
-// @description  在B站直播页面显示主播签约状态和繁星主播状态
+// @version      1.4
+// @description  update手动请求
 // @author       9
 // @match        https://live.bilibili.com/p/eden/area-tags*
 // @match        https://api.live.bilibili.com/xlive/mcn-interface/v1/mcn_mng/SearchAnchor*
@@ -132,6 +132,45 @@
 
         .status-new {
             background-color: #63cc00ff !important;
+        }
+
+        /* 右下角悬浮球 */
+        .anchor-float-button {
+            position: fixed !important;
+            right: 24px !important;
+            top: 24px !important;
+            width: 52px !important;
+            height: 52px !important;
+            border-radius: 50% !important;
+            background: #00a1d6 !important;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.25) !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            color: #fff !important;
+            font-size: 24px !important;
+            cursor: pointer !important;
+            z-index: 10000 !important;
+        }
+
+        .anchor-float-button:hover {
+            background: #00b5e5 !important;
+        }
+
+        /* 分类页卡片上的查询按钮 */
+        .anchor-card-button {
+            display: inline-block !important;
+            margin-top: 4px !important;
+            padding: 2px 6px !important;
+            font-size: 12px !important;
+            color: #fff !important;
+            background: #00a1d6 !important;
+            border-radius: 4px !important;
+            cursor: pointer !important;
+        }
+
+        .anchor-card-button:hover {
+            background: #00b5e5 !important;
         }
     `;
     document.head.appendChild(style);
@@ -297,7 +336,7 @@
         return container;
     }
 
-    // 处理单个直播卡片的函数
+    // 处理单个直播卡片的函数（仅在分类页使用，按按钮后才请求）
     async function processLiveCard(card) {
         // 查找链接元素
         const linkElement = card.querySelector('a[href*="live.bilibili.com"]') || card;
@@ -311,19 +350,10 @@
             return;
         }
 
-        // 检查是否已经处理过这个房间号
-        if (processedCards.has(roomId)) {
-            return;
-        }
-
-        // 检查DOM中是否已经有状态标签
+        // 防止重复展示
         if (card.querySelector('[data-room-id="' + roomId + '"]')) {
-            processedCards.add(roomId);
-            return;
+            return true;
         }
-
-        // 标记为正在处理，避免重复请求
-        processedCards.add(roomId);
 
         try {
             // 获取主播信息
@@ -331,215 +361,156 @@
 
             if (response.code === 0 && response.data.items && response.data.items.length > 0) {
                 const anchorInfo = response.data.items[0];
+
+                // 使用原来的标签样式在卡片上展示状态
                 const isSigned = anchorInfo.is_signed;
                 const isStarAnchor = anchorInfo.is_star_anchor === 1;
                 const isNewAnchor = anchorInfo.is_new_anchor === 1;
 
-                // 查找主播名字元素
                 const nameElement = card.querySelector('.Item_nickName_KO2QE');
                 if (nameElement) {
-                    // 创建状态标签（仅在分类页面显示）
                     const statusBadges = createStatusBadge(isSigned, isStarAnchor, isNewAnchor);
-
-                    // 给状态标签添加房间号标识
                     statusBadges.setAttribute('data-room-id', roomId);
-
-                    // 查找合适的插入位置
-                    // 尝试插入到名字元素的父容器的父容器中（卡片内容区域）
                     let insertTarget = nameElement.parentElement;
-
-                    // 如果父容器存在，尝试找到更合适的容器
                     if (insertTarget && insertTarget.parentElement) {
-                        // 检查是否有更大的容器可以插入
                         const cardContentContainer = insertTarget.parentElement;
-                        if (cardContentContainer) {
-                            insertTarget = cardContentContainer;
-                        }
+                        if (cardContentContainer) insertTarget = cardContentContainer;
                     }
-
-                    if (insertTarget) {
-                        insertTarget.appendChild(statusBadges);
-                    }
+                    if (insertTarget) insertTarget.appendChild(statusBadges);
                 }
+
+                processedCards.add(roomId);
+                return true;
             }
         } catch (error) {
-            // 如果请求失败，从缓存中移除，允许下次重试
-            processedCards.delete(roomId);
             console.error('获取主播信息失败:', error);
         }
+
+        return false;
     }
 
-    // 查找并处理所有直播卡片的函数
-    function processAllLiveCards() {
-        // 查找所有直播卡片
+    // 为分类页上的所有卡片添加“查询”按钮
+    function addButtonsForAllCards() {
         const liveCards = document.querySelectorAll('a.Item_card-item_vf59q, .index_item_JSGkw a[href*="live.bilibili.com"]');
 
         liveCards.forEach(card => {
-            processLiveCard(card);
-        });
+            // 避免重复添加
+            if (card.querySelector('.anchor-card-button')) return;
 
-        // 清理已删除卡片对应的缓存
-        cleanupProcessedCards();
-    }
-
-    // 清理已删除卡片的缓存
-    function cleanupProcessedCards() {
-        const currentRoomIds = new Set();
-        const liveCards = document.querySelectorAll('a.Item_card-item_vf59q, .index_item_JSGkw a[href*="live.bilibili.com"]');
-
-        liveCards.forEach(card => {
             const linkElement = card.querySelector('a[href*="live.bilibili.com"]') || card;
-            if (linkElement && linkElement.href) {
-                const roomId = extractRoomId(linkElement.href);
-                if (roomId) {
-                    currentRoomIds.add(roomId);
-                }
-            }
-        });
+            if (!linkElement || !linkElement.href) return;
+            const roomId = extractRoomId(linkElement.href);
+            if (!roomId) return;
+            if (processedCards.has(roomId)) return;
 
-        // 移除不再存在的房间号
-        for (const roomId of processedCards) {
-            if (!currentRoomIds.has(roomId)) {
-                processedCards.delete(roomId);
+            const nameElement = card.querySelector('.Item_nickName_KO2QE');
+            if (!nameElement) return;
+
+            const btn = document.createElement('span');
+            btn.className = 'anchor-card-button';
+            btn.textContent = '查询';
+            btn.addEventListener('click', async (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (btn.dataset.loading) return;
+                btn.dataset.loading = '1';
+                btn.textContent = '查询中';
+                const success = await processLiveCard(card);
+                if (success) {
+                    btn.remove();
+                } else {
+                    btn.removeAttribute('data-loading');
+                    btn.textContent = '查询';
+                }
+            });
+
+            let insertTarget = nameElement.parentElement;
+            if (insertTarget && insertTarget.parentElement) {
+                const cardContentContainer = insertTarget.parentElement;
+                if (cardContentContainer) insertTarget = cardContentContainer;
             }
-        }
+            if (insertTarget) insertTarget.appendChild(btn);
+        });
     }
 
-    // 创建观察器来监听DOM变化
-    const observer = new MutationObserver((mutations) => {
-        let shouldProcess = false;
+    // 创建右下角悬浮球
+    function createFloatButton(onClick) {
+        if (document.querySelector('.anchor-float-button')) return;
+        const btn = document.createElement('div');
+        btn.className = 'anchor-float-button';
+        btn.textContent = '信息';
+        btn.addEventListener('click', onClick);
+        document.body.appendChild(btn);
+    }
 
-        mutations.forEach((mutation) => {
-            if (mutation.type === 'childList') {
-                mutation.addedNodes.forEach((node) => {
-                    if (node.nodeType === Node.ELEMENT_NODE) {
-                        // 检查是否有新的直播卡片添加
-                        if (node.matches && (node.matches('a.Item_card-item_vf59q') ||
-                            node.matches('.index_item_JSGkw') ||
-                            node.querySelector('a[href*="live.bilibili.com"]'))) {
-                            shouldProcess = true;
-                        }
-                    }
-                });
-            }
-        });
-
-        if (shouldProcess) {
-            // 延迟执行，确保DOM完全加载
-            setTimeout(processAllLiveCards, 500);
-        }
-    });
-
-    // 处理个人空间页面的函数
-    async function processSpacePage() {
-        // 检查是否在个人空间页面
-        if (!window.location.href.includes('space.bilibili.com/')) {
-            return;
-        }
-
-        // 提取UID
+    // 处理个人空间页面（点击后再请求）
+    async function handleSpaceClick() {
         const uid = extractUidFromSpace();
-        if (!uid) {
-            return;
-        }
+        if (!uid) return;
 
-        // 检查是否已经添加过浮窗
-        if (document.querySelector('.anchor-detail-info[data-uid="' + uid + '"]')) {
+        // 已有卡片则仅切换显示
+        const exist = document.querySelector('.anchor-detail-info[data-uid="' + uid + '"]');
+        if (exist) {
+            exist.remove();
             return;
         }
 
         try {
-            // 获取主播信息
             const response = await fetchAnchorInfoByUid(uid);
-
             if (response.code === 0 && response.data.items && response.data.items.length > 0) {
                 const anchorInfo = response.data.items[0];
-
-                // 创建详细信息显示
                 const detailedInfo = createDetailedInfo(anchorInfo);
                 detailedInfo.setAttribute('data-uid', uid);
-
-                // 直接添加到页面body中
                 document.body.appendChild(detailedInfo);
             }
-        } catch (error) {
-            console.error('获取主播信息失败:', error);
+        } catch (e) {
+            console.error('获取主播信息失败:', e);
         }
     }
 
-    // 处理直播间页面的函数
-    async function processLiveRoomPage() {
-        // 检查是否在直播间页面
-        if (!window.location.href.match(/live\.bilibili\.com\/\d+/)) {
-            return;
-        }
-
-        // 提取房间号
+    // 处理直播间页面（点击后再请求）
+    async function handleLiveRoomClick() {
         const roomId = extractRoomIdFromLive();
-        if (!roomId) {
-            return;
-        }
+        if (!roomId) return;
 
-        // 检查是否已经添加过浮窗
-        if (document.querySelector('.anchor-detail-info[data-room-id="' + roomId + '"]')) {
+        const exist = document.querySelector('.anchor-detail-info[data-room-id="' + roomId + '"]');
+        if (exist) {
+            exist.remove();
             return;
         }
 
         try {
-            // 获取主播信息
             const response = await fetchAnchorInfo(roomId);
-
             if (response.code === 0 && response.data.items && response.data.items.length > 0) {
                 const anchorInfo = response.data.items[0];
-
-                // 创建详细信息显示
                 const detailedInfo = createDetailedInfo(anchorInfo);
                 detailedInfo.setAttribute('data-room-id', roomId);
-
-                // 直接添加到页面body中
                 document.body.appendChild(detailedInfo);
             }
-        } catch (error) {
-            console.error('获取主播信息失败:', error);
+        } catch (e) {
+            console.error('获取主播信息失败:', e);
         }
     }
 
-    // 检查当前页面类型并执行对应处理
+    // 初始化：只创建悬浮球，不自动请求
     function initializeScript() {
         if (window.location.href.includes('space.bilibili.com/')) {
-            // 个人空间页面
-            setTimeout(() => {
-                processSpacePage();
-
-                // 定期检查（防止动态加载内容）
-                setInterval(processSpacePage, 2000);
-            }, 1000);
+            createFloatButton(handleSpaceClick);
         } else if (window.location.href.match(/live\.bilibili\.com\/\d+/)) {
-            // 直播间页面
-            setTimeout(() => {
-                processLiveRoomPage();
-
-                // 定期检查（防止动态加载内容）
-                setInterval(processLiveRoomPage, 2000);
-            }, 1000);
+            createFloatButton(handleLiveRoomClick);
         } else if (window.location.href.includes('live.bilibili.com/p/eden/area-tags')) {
-            // 直播分类页面
+            // 分类页：不自动请求，在每个卡片上放按钮
             setTimeout(() => {
-                processAllLiveCards();
-
-                // 定期检查新的卡片（防止某些情况下观察器失效）
-                setInterval(processAllLiveCards, 3000);
+                addButtonsForAllCards();
+                // 处理后续懒加载的卡片
+                const observer = new MutationObserver(() => {
+                    addButtonsForAllCards();
+                });
+                observer.observe(document.body, { childList: true, subtree: true });
             }, 1000);
         }
     }
 
-    // 开始观察
-    observer.observe(document.body, {
-        childList: true,
-        subtree: true
-    });
-
-    // 初始处理
     initializeScript();
 
 })();
