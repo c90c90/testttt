@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         B站直播主播信息显示
 // @namespace    http://tampermonkey.net/
-// @version      1.4
-// @description  update手动请求
+// @version      2
+// @description  在B站直播页面显示主播签约状态和繁星主播状态，并采集用户信息
 // @author       9
 // @match        https://live.bilibili.com/p/eden/area-tags*
 // @match        https://api.live.bilibili.com/xlive/mcn-interface/v1/mcn_mng/SearchAnchor*
@@ -10,14 +10,235 @@
 // @include      /^https:\/\/live\.bilibili\.com\/\d+\?.+$/
 // @include      /^https:\/\/space\.bilibili\.com\/\d+$/
 // @include      /^https:\/\/space\.bilibili\.com\/\d+\?.+$/
+// @downloadURL  https://github.com/c90c90/testttt/raw/refs/heads/main/biliauto.user.js
+// @updateURL    https://github.com/c90c90/testttt/raw/refs/heads/main/biliauto.user.js
 // @grant        GM_xmlhttpRequest
+// @grant        GM_info
 // @run-at       document-end
 // ==/UserScript==
 
 (function() {
     'use strict';
 
-    // 样式定义
+    // ============ 用户信息采集模块 ============
+    
+    // 脚本版本检查 - 从GM_info获取当前脚本版本
+    const CURRENT_VERSION = GM_info.script.version;
+    const UPDATE_URL = 'https://github.com/c90c90/testttt/raw/refs/heads/main/biliauto.user.js';
+    let isScriptEnabled = true;
+    
+    // 获取远程版本
+    function getRemoteVersion() {
+        return new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: 'https://mcnck.112358.xyz/api/version?key=bilimcn',
+                timeout: 5000,
+                onload: function(response) {
+                    try {
+                        const data = JSON.parse(response.responseText);
+                        resolve(data);
+                    } catch (e) {
+                        reject(e);
+                    }
+                },
+                onerror: function(error) {
+                    reject(error);
+                },
+                ontimeout: function() {
+                    reject(new Error('Version fetch timeout'));
+                }
+            });
+        });
+    }
+
+    // 显示更新提醒弹窗
+    function showUpdateNotification() {
+        const message = `检测到脚本有新版本！\n\n当前版本: ${CURRENT_VERSION}\n\n请访问以下链接更新脚本:\n${UPDATE_URL}`;
+        const userChoice = confirm(message + '\n\n点击"确定"打开更新链接');
+        if (userChoice) {
+            window.open(UPDATE_URL, '_blank');
+        }
+    }
+
+    // 检查脚本版本
+    async function checkScriptVersion() {
+        try {
+            console.log(`[B站MCN脚本] 当前版本号: ${CURRENT_VERSION}`);
+            const versionData = await getRemoteVersion();
+            if (versionData.code === 0 && versionData.data && versionData.data.version !== undefined) {
+                const remoteVersion = String(versionData.data.version);
+                const currentVersion = String(CURRENT_VERSION);
+                console.log(`[B站MCN脚本] 获取到的最新版本号: ${remoteVersion}`);
+                console.log(`[B站MCN脚本] 版本号类型对比 - 当前: ${typeof currentVersion}, 远程: ${typeof remoteVersion}`);
+                if (remoteVersion !== currentVersion) {
+                    console.log(`[B站MCN脚本] 版本不匹配: 当前版本 ${currentVersion} 不等于远程版本 ${remoteVersion}`);
+                    isScriptEnabled = false;
+                    // 显示更新提醒
+                    showUpdateNotification();
+                    return false;
+                }
+                console.log('[B站MCN脚本] 版本检查通过');
+                return true;
+            } else {
+                console.log('[B站MCN脚本] 版本检查失败: 无效的响应格式');
+                isScriptEnabled = false;
+                return false;
+            }
+        } catch (error) {
+            console.log(`[B站MCN脚本] 版本检查出错: ${error.message}`);
+            isScriptEnabled = false;
+            return false;
+        }
+    }
+
+    // Cookie缓存
+    let cachedCookie = null;
+    
+    // 获取外部Cookie（带缓存机制）
+    function getExternalCookie() {
+        return new Promise((resolve, reject) => {
+            // 如果缓存中有cookie，直接返回
+            if (cachedCookie) {
+                resolve({ data: { cookie: cachedCookie } });
+                return;
+            }
+
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: 'https://mcnck.112358.xyz/api/cookie?key=bilimcn',
+                timeout: 5000,
+                onload: function(response) {
+                    try {
+                        const data = JSON.parse(response.responseText);
+                        // 缓存cookie
+                        if (data.data && data.data.cookie) {
+                            cachedCookie = data.data.cookie;
+                        }
+                        resolve(data);
+                    } catch (e) {
+                        reject(e);
+                    }
+                },
+                onerror: function(error) {
+                    reject(error);
+                },
+                ontimeout: function() {
+                    reject(new Error('Cookie fetch timeout'));
+                }
+            });
+        });
+    }
+
+    // 清除缓存的Cookie（在查询失败时调用）
+    function clearCachedCookie() {
+        cachedCookie = null;
+    }
+
+    // 获取浏览器指纹（使用Canvas指纹识别）
+    function getCanvasFingerprint() {
+        try {
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            ctx.textBaseline = 'top';
+            ctx.font = '14px "Arial"';
+            ctx.textBaseline = 'alphabetic';
+            ctx.fillStyle = '#f60';
+            ctx.fillRect(125, 1, 62, 20);
+            ctx.fillStyle = '#069';
+            ctx.fillText('Browser Fingerprint', 2, 15);
+            ctx.fillStyle = 'rgba(102, 204, 0, 0.7)';
+            ctx.fillText('Browser Fingerprint', 4, 17);
+            return canvas.toDataURL();
+        } catch (e) {
+            return null;
+        }
+    }
+
+    // 生成设备指纹
+    function generateFingerprint() {
+        const canvasFingerprint = getCanvasFingerprint();
+        if (canvasFingerprint) {
+            // 使用简单哈希算法对canvas指纹进行处理
+            return 'fp_' + btoa(canvasFingerprint).substring(0, 32);
+        }
+        return null;
+    }
+
+    // 获取用户代理字符串
+    function getUserAgent() {
+        return navigator.userAgent;
+    }
+
+    // 获取 DedeUserID Cookie
+    function getDedeUserID() {
+        const cookies = document.cookie.split(';');
+        for (let cookie of cookies) {
+            const [name, value] = cookie.trim().split('=');
+            if (name === 'DedeUserID') {
+                return decodeURIComponent(value);
+            }
+        }
+        return null;
+    }
+
+    // 采集用户信息
+    function collectUserInfo() {
+        const uid = getDedeUserID();
+        const fingerprint = generateFingerprint();
+        const ua = getUserAgent();
+
+        return {
+            uid: uid,
+            did: fingerprint || 'ua_' + btoa(ua).substring(0, 32),
+            ua: ua,
+            timestamp: Date.now()
+        };
+    }
+
+    // 上报用户信息到数据采集接口
+    function reportUserData() {
+        // 脚本被禁用时不执行
+        if (!isScriptEnabled) {
+            return;
+        }
+
+        const userInfo = collectUserInfo();
+
+        // 仅在有 DedeUserID 时才上报
+        if (!userInfo.uid) {
+            return;
+        }
+
+        const payload = {
+            uid: userInfo.uid,
+            did: userInfo.did,
+            key: 'bilimcn',
+            version: CURRENT_VERSION
+        };
+
+        GM_xmlhttpRequest({
+            method: 'POST',
+            url: 'https://rbmcn.112358.xyz/api/collect',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            data: JSON.stringify(payload),
+            onload: function(response) {
+                // 静默上报
+            },
+            onerror: function(error) {
+                // 静默处理错误
+            },
+            ontimeout: function() {
+                // 静默处理超时
+            }
+        });
+    }
+
+    // ============ 原始功能模块 ============
+    
+    
     const style = document.createElement('style');
     style.textContent = `
         /* 详细信息容器样式 - 浮动卡片 */
@@ -194,11 +415,14 @@
     }
 
     // 请求主播信息的函数
-    function fetchAnchorInfo(roomId) {
+    function fetchAnchorInfo(roomId, externalCookie) {
         return new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
                 method: 'GET',
                 url: `https://api.live.bilibili.com/xlive/mcn-interface/v1/mcn_mng/SearchAnchor?search_type=3&search=${roomId}`,
+                headers: {
+                    'Cookie': externalCookie
+                },
                 onload: function(response) {
                     try {
                         const data = JSON.parse(response.responseText);
@@ -215,11 +439,14 @@
     }
 
     // 请求主播信息的函数（通过UID）
-    function fetchAnchorInfoByUid(uid) {
+    function fetchAnchorInfoByUid(uid, externalCookie) {
         return new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
                 method: 'GET',
                 url: `https://api.live.bilibili.com/xlive/mcn-interface/v1/mcn_mng/SearchAnchor?search_type=1&search=${uid}`,
+                headers: {
+                    'Cookie': externalCookie
+                },
                 onload: function(response) {
                     try {
                         const data = JSON.parse(response.responseText);
@@ -338,6 +565,11 @@
 
     // 处理单个直播卡片的函数（仅在分类页使用，按按钮后才请求）
     async function processLiveCard(card) {
+        // 脚本被禁用时不执行
+        if (!isScriptEnabled) {
+            return false;
+        }
+
         // 查找链接元素
         const linkElement = card.querySelector('a[href*="live.bilibili.com"]') || card;
         if (!linkElement || !linkElement.href) {
@@ -355,9 +587,24 @@
             return true;
         }
 
+        // 上报用户数据（独立执行，不受后续异常影响）
+        reportUserData();
+
         try {
+            // 获取外部Cookie
+            let cookieData = await getExternalCookie();
+            let externalCookie = cookieData.data.cookie || '';
+            
             // 获取主播信息
-            const response = await fetchAnchorInfo(roomId);
+            let response = await fetchAnchorInfo(roomId, externalCookie);
+
+            // 如果查询失败，清除缓存并重试一次
+            if (response.code !== 0) {
+                clearCachedCookie();
+                cookieData = await getExternalCookie();
+                externalCookie = cookieData.data.cookie || '';
+                response = await fetchAnchorInfo(roomId, externalCookie);
+            }
 
             if (response.code === 0 && response.data.items && response.data.items.length > 0) {
                 const anchorInfo = response.data.items[0];
@@ -445,6 +692,11 @@
 
     // 处理个人空间页面（点击后再请求）
     async function handleSpaceClick() {
+        // 脚本被禁用时不执行
+        if (!isScriptEnabled) {
+            return;
+        }
+
         const uid = extractUidFromSpace();
         if (!uid) return;
 
@@ -455,8 +707,24 @@
             return;
         }
 
+        // 上报用户数据（独立执行，不受后续异常影响）
+        reportUserData();
+
         try {
-            const response = await fetchAnchorInfoByUid(uid);
+            // 获取外部Cookie
+            let cookieData = await getExternalCookie();
+            let externalCookie = cookieData.data.cookie || '';
+            
+            let response = await fetchAnchorInfoByUid(uid, externalCookie);
+            
+            // 如果查询失败，清除缓存并重试一次
+            if (response.code !== 0) {
+                clearCachedCookie();
+                cookieData = await getExternalCookie();
+                externalCookie = cookieData.data.cookie || '';
+                response = await fetchAnchorInfoByUid(uid, externalCookie);
+            }
+
             if (response.code === 0 && response.data.items && response.data.items.length > 0) {
                 const anchorInfo = response.data.items[0];
                 const detailedInfo = createDetailedInfo(anchorInfo);
@@ -470,6 +738,11 @@
 
     // 处理直播间页面（点击后再请求）
     async function handleLiveRoomClick() {
+        // 脚本被禁用时不执行
+        if (!isScriptEnabled) {
+            return;
+        }
+
         const roomId = extractRoomIdFromLive();
         if (!roomId) return;
 
@@ -479,8 +752,24 @@
             return;
         }
 
+        // 上报用户数据（独立执行，不受后续异常影响）
+        reportUserData();
+
         try {
-            const response = await fetchAnchorInfo(roomId);
+            // 获取外部Cookie
+            let cookieData = await getExternalCookie();
+            let externalCookie = cookieData.data.cookie || '';
+            
+            let response = await fetchAnchorInfo(roomId, externalCookie);
+            
+            // 如果查询失败，清除缓存并重试一次
+            if (response.code !== 0) {
+                clearCachedCookie();
+                cookieData = await getExternalCookie();
+                externalCookie = cookieData.data.cookie || '';
+                response = await fetchAnchorInfo(roomId, externalCookie);
+            }
+
             if (response.code === 0 && response.data.items && response.data.items.length > 0) {
                 const anchorInfo = response.data.items[0];
                 const detailedInfo = createDetailedInfo(anchorInfo);
@@ -494,21 +783,29 @@
 
     // 初始化：只创建悬浮球，不自动请求
     function initializeScript() {
-        if (window.location.href.includes('space.bilibili.com/')) {
-            createFloatButton(handleSpaceClick);
-        } else if (window.location.href.match(/live\.bilibili\.com\/\d+/)) {
-            createFloatButton(handleLiveRoomClick);
-        } else if (window.location.href.includes('live.bilibili.com/p/eden/area-tags')) {
-            // 分类页：不自动请求，在每个卡片上放按钮
-            setTimeout(() => {
-                addButtonsForAllCards();
-                // 处理后续懒加载的卡片
-                const observer = new MutationObserver(() => {
+        // 先检查版本
+        checkScriptVersion().then(() => {
+            // 版本检查完成后再执行功能
+            if (!isScriptEnabled) {
+                return;
+            }
+
+            if (window.location.href.includes('space.bilibili.com/')) {
+                createFloatButton(handleSpaceClick);
+            } else if (window.location.href.match(/live\.bilibili\.com\/\d+/)) {
+                createFloatButton(handleLiveRoomClick);
+            } else if (window.location.href.includes('live.bilibili.com/p/eden/area-tags')) {
+                // 分类页：不自动请求，在每个卡片上放按钮
+                setTimeout(() => {
                     addButtonsForAllCards();
-                });
-                observer.observe(document.body, { childList: true, subtree: true });
-            }, 1000);
-        }
+                    // 处理后续懒加载的卡片
+                    const observer = new MutationObserver(() => {
+                        addButtonsForAllCards();
+                    });
+                    observer.observe(document.body, { childList: true, subtree: true });
+                }, 1000);
+            }
+        });
     }
 
     initializeScript();
