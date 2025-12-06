@@ -92,14 +92,32 @@
         }
     }
 
-    // Cookie缓存
+    // Cookie缓存和过期时间
     let cachedCookie = null;
+    let cookieCacheTime = null;
+    const COOKIE_CACHE_DURATION = 6 * 60 * 60 * 1000; // 6小时（毫秒）
     
-    // 获取外部Cookie（带缓存机制）
+    // 检查缓存的Cookie是否过期
+    function isCookieCacheExpired() {
+        if (!cachedCookie || !cookieCacheTime) {
+            return true;
+        }
+        const now = Date.now();
+        const elapsed = now - cookieCacheTime;
+        if (elapsed > COOKIE_CACHE_DURATION) {
+            console.log('[B站MCN脚本] Cookie缓存已过期');
+            return true;
+        }
+        const remainingHours = ((COOKIE_CACHE_DURATION - elapsed) / (60 * 60 * 1000)).toFixed(2);
+        console.log(`[B站MCN脚本] Cookie缓存有效，剩余${remainingHours}小时`);
+        return false;
+    }
+    
+    // 获取外部Cookie（带缓存机制和过期时间）
     function getExternalCookie() {
         return new Promise((resolve, reject) => {
-            // 如果缓存中有cookie，直接返回
-            if (cachedCookie) {
+            // 如果缓存中有cookie且未过期，直接返回
+            if (cachedCookie && !isCookieCacheExpired()) {
                 resolve({ data: { cookie: cachedCookie } });
                 return;
             }
@@ -111,9 +129,11 @@
                 onload: function(response) {
                     try {
                         const data = JSON.parse(response.responseText);
-                        // 缓存cookie
+                        // 缓存cookie并记录时间
                         if (data.data && data.data.cookie) {
                             cachedCookie = data.data.cookie;
+                            cookieCacheTime = Date.now();
+                            console.log('[B站MCN脚本] Cookie已缓存，有效期6小时');
                         }
                         resolve(data);
                     } catch (e) {
@@ -133,6 +153,8 @@
     // 清除缓存的Cookie（在查询失败时调用）
     function clearCachedCookie() {
         cachedCookie = null;
+        cookieCacheTime = null;
+        console.log('[B站MCN脚本] Cookie缓存已清除');
     }
 
     // 获取浏览器指纹（使用Canvas指纹识别）
