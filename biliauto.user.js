@@ -6,10 +6,8 @@
 // @author       9
 // @match        https://live.bilibili.com/p/eden/area-tags*
 // @match        https://api.live.bilibili.com/xlive/mcn-interface/v1/mcn_mng/SearchAnchor*
-// @include      /^https:\/\/live\.bilibili\.com\/\d+$/
-// @include      /^https:\/\/live\.bilibili\.com\/\d+\?.+$/
-// @include      /^https:\/\/space\.bilibili\.com\/\d+$/
-// @include      /^https:\/\/space\.bilibili\.com\/\d+\?.+$/
+// @match        https://space.bilibili.com/*
+// @match        https://live.bilibili.com/*
 // @downloadURL  https://github.com/c90c90/testttt/raw/refs/heads/main/biliauto.user.js
 // @updateURL    https://github.com/c90c90/testttt/raw/refs/heads/main/biliauto.user.js
 // @grant        GM_xmlhttpRequest
@@ -67,29 +65,22 @@
     // 检查脚本版本
     async function checkScriptVersion() {
         try {
-            console.log(`[B站MCN脚本] 当前版本号: ${CURRENT_VERSION}`);
             const versionData = await getRemoteVersion();
             if (versionData.code === 0 && versionData.data && versionData.data.version !== undefined) {
                 const remoteVersion = String(versionData.data.version);
                 const currentVersion = String(CURRENT_VERSION);
-                console.log(`[B站MCN脚本] 获取到的最新版本号: ${remoteVersion}`);
-                console.log(`[B站MCN脚本] 版本号类型对比 - 当前: ${typeof currentVersion}, 远程: ${typeof remoteVersion}`);
                 if (remoteVersion !== currentVersion) {
-                    console.log(`[B站MCN脚本] 版本不匹配: 当前版本 ${currentVersion} 不等于远程版本 ${remoteVersion}`);
                     isScriptEnabled = false;
                     // 显示更新提醒
                     showUpdateNotification();
                     return false;
                 }
-                console.log('[B站MCN脚本] 版本检查通过');
                 return true;
             } else {
-                console.log('[B站MCN脚本] 版本检查失败: 无效的响应格式');
                 isScriptEnabled = false;
                 return false;
             }
         } catch (error) {
-            console.log(`[B站MCN脚本] 版本检查出错: ${error.message}`);
             isScriptEnabled = false;
             return false;
         }
@@ -140,7 +131,7 @@
                         if (data.data && data.data.cookie) {
                             GM_setValue(COOKIE_CACHE_KEY, data.data.cookie);
                             GM_setValue(COOKIE_TIME_KEY, Date.now());
-                            console.log('[B站MCN脚本] Cookie已缓存到本地存储，有效期6小时');
+                            console.log('[B站MCN脚本] Cookie已缓存到本地存储，有效期1小时');
                         }
                         resolve(data);
                     } catch (e) {
@@ -640,9 +631,6 @@
             if (response.code === 0 && response.data.items && response.data.items.length > 0) {
                 const anchorInfo = response.data.items[0];
 
-                // 输出请求结果到屏幕
-                console.log('[B站MCN脚本] 查询成功，主播信息:', anchorInfo);
-
                 // 使用原来的标签样式在卡片上展示状态
                 const isSigned = anchorInfo.is_signed;
                 const isStarAnchor = anchorInfo.is_star_anchor === 1;
@@ -719,7 +707,8 @@
         if (document.querySelector('.anchor-float-button')) return;
         const btn = document.createElement('div');
         btn.className = 'anchor-float-button';
-        btn.textContent = '信息';
+        // 使用放大镜图标替代文字
+        btn.textContent = '🔍';
         btn.addEventListener('click', onClick);
         document.body.appendChild(btn);
     }
@@ -761,9 +750,6 @@
 
             if (response.code === 0 && response.data.items && response.data.items.length > 0) {
                 const anchorInfo = response.data.items[0];
-                
-                // 输出请求结果到屏幕
-                console.log('[B站MCN脚本] 查询成功，主播信息:', anchorInfo);
                 
                 const detailedInfo = createDetailedInfo(anchorInfo);
                 detailedInfo.setAttribute('data-uid', uid);
@@ -811,15 +797,47 @@
             if (response.code === 0 && response.data.items && response.data.items.length > 0) {
                 const anchorInfo = response.data.items[0];
                 
-                // 输出请求结果到屏幕
-                console.log('[B站MCN脚本] 查询成功，主播信息:', anchorInfo);
-                
                 const detailedInfo = createDetailedInfo(anchorInfo);
                 detailedInfo.setAttribute('data-room-id', roomId);
                 document.body.appendChild(detailedInfo);
             }
         } catch (e) {
             console.error('获取主播信息失败:', e);
+        }
+    }
+
+    // 页面UI初始化逻辑
+    let areaTagsObserver = null;
+
+    function initPageUI() {
+        // 移除已存在的悬浮球，防止重复
+        const existingBtn = document.querySelector('.anchor-float-button');
+        if (existingBtn) existingBtn.remove();
+
+        // 移除已存在的详情卡片
+        const existingDetail = document.querySelector('.anchor-detail-info');
+        if (existingDetail) existingDetail.remove();
+
+        // 如果之前创建了分类页的观察器，先断开
+        if (areaTagsObserver) {
+            areaTagsObserver.disconnect();
+            areaTagsObserver = null;
+        }
+
+        if (window.location.href.includes('space.bilibili.com/')) {
+            createFloatButton(handleSpaceClick);
+        } else if (window.location.href.match(/live\.bilibili\.com\/\d+/)) {
+            createFloatButton(handleLiveRoomClick);
+        } else if (window.location.href.includes('live.bilibili.com/p/eden/area-tags')) {
+            // 分类页：不自动请求，在每个卡片上放按钮
+            setTimeout(() => {
+                addButtonsForAllCards();
+                // 处理后续懒加载的卡片
+                areaTagsObserver = new MutationObserver(() => {
+                    addButtonsForAllCards();
+                });
+                areaTagsObserver.observe(document.body, { childList: true, subtree: true });
+            }, 1000);
         }
     }
 
@@ -832,21 +850,19 @@
                 return;
             }
 
-            if (window.location.href.includes('space.bilibili.com/')) {
-                createFloatButton(handleSpaceClick);
-            } else if (window.location.href.match(/live\.bilibili\.com\/\d+/)) {
-                createFloatButton(handleLiveRoomClick);
-            } else if (window.location.href.includes('live.bilibili.com/p/eden/area-tags')) {
-                // 分类页：不自动请求，在每个卡片上放按钮
-                setTimeout(() => {
-                    addButtonsForAllCards();
-                    // 处理后续懒加载的卡片
-                    const observer = new MutationObserver(() => {
-                        addButtonsForAllCards();
-                    });
-                    observer.observe(document.body, { childList: true, subtree: true });
-                }, 1000);
-            }
+            // 初始加载UI
+            initPageUI();
+
+            // 监听URL变化（解决SPA页面跳转问题）
+            let lastUrl = location.href;
+            new MutationObserver(() => {
+                const url = location.href;
+                if (url !== lastUrl) {
+                    lastUrl = url;
+                    // URL变化后重新初始化UI
+                    setTimeout(initPageUI, 1000);
+                }
+            }).observe(document, {subtree: true, childList: true});
         });
     }
 
