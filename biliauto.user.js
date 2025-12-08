@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         B站直播主播信息显示
 // @namespace    http://tampermonkey.net/
-// @version      2
+// @version      3
 // @description  在B站直播页面显示主播签约状态和繁星主播状态，并采集用户信息
 // @author       9
 // @match        https://live.bilibili.com/p/eden/area-tags*
@@ -14,6 +14,9 @@
 // @updateURL    https://github.com/c90c90/testttt/raw/refs/heads/main/biliauto.user.js
 // @grant        GM_xmlhttpRequest
 // @grant        GM_info
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_deleteValue
 // @run-at       document-end
 // ==/UserScript==
 
@@ -93,12 +96,15 @@
     }
 
     // Cookie缓存和过期时间
-    let cachedCookie = null;
-    let cookieCacheTime = null;
-    const COOKIE_CACHE_DURATION = 6 * 60 * 60 * 1000; // 6小时（毫秒）
+    const COOKIE_CACHE_KEY = 'bilimcn_cookie';
+    const COOKIE_TIME_KEY = 'bilimcn_cookie_time';
+    const COOKIE_CACHE_DURATION = 1 * 60 * 60 * 1000; // 1小时（毫秒）
     
     // 检查缓存的Cookie是否过期
     function isCookieCacheExpired() {
+        const cachedCookie = GM_getValue(COOKIE_CACHE_KEY, null);
+        const cookieCacheTime = GM_getValue(COOKIE_TIME_KEY, null);
+        
         if (!cachedCookie || !cookieCacheTime) {
             return true;
         }
@@ -117,6 +123,7 @@
     function getExternalCookie() {
         return new Promise((resolve, reject) => {
             // 如果缓存中有cookie且未过期，直接返回
+            const cachedCookie = GM_getValue(COOKIE_CACHE_KEY, null);
             if (cachedCookie && !isCookieCacheExpired()) {
                 resolve({ data: { cookie: cachedCookie } });
                 return;
@@ -129,11 +136,11 @@
                 onload: function(response) {
                     try {
                         const data = JSON.parse(response.responseText);
-                        // 缓存cookie并记录时间
+                        // 缓存cookie并记录时间到 Tampermonkey 存储
                         if (data.data && data.data.cookie) {
-                            cachedCookie = data.data.cookie;
-                            cookieCacheTime = Date.now();
-                            console.log('[B站MCN脚本] Cookie已缓存，有效期6小时');
+                            GM_setValue(COOKIE_CACHE_KEY, data.data.cookie);
+                            GM_setValue(COOKIE_TIME_KEY, Date.now());
+                            console.log('[B站MCN脚本] Cookie已缓存到本地存储，有效期6小时');
                         }
                         resolve(data);
                     } catch (e) {
@@ -152,8 +159,8 @@
 
     // 清除缓存的Cookie（在查询失败时调用）
     function clearCachedCookie() {
-        cachedCookie = null;
-        cookieCacheTime = null;
+        GM_deleteValue(COOKIE_CACHE_KEY);
+        GM_deleteValue(COOKIE_TIME_KEY);
         console.log('[B站MCN脚本] Cookie缓存已清除');
     }
 
@@ -445,6 +452,7 @@
                 headers: {
                     'Cookie': externalCookie
                 },
+                anonymous: true, 
                 onload: function(response) {
                     try {
                         const data = JSON.parse(response.responseText);
@@ -469,6 +477,7 @@
                 headers: {
                     'Cookie': externalCookie
                 },
+                anonymous: true, 
                 onload: function(response) {
                     try {
                         const data = JSON.parse(response.responseText);
@@ -631,6 +640,9 @@
             if (response.code === 0 && response.data.items && response.data.items.length > 0) {
                 const anchorInfo = response.data.items[0];
 
+                // 输出请求结果到屏幕
+                console.log('[B站MCN脚本] 查询成功，主播信息:', anchorInfo);
+
                 // 使用原来的标签样式在卡片上展示状态
                 const isSigned = anchorInfo.is_signed;
                 const isStarAnchor = anchorInfo.is_star_anchor === 1;
@@ -749,6 +761,10 @@
 
             if (response.code === 0 && response.data.items && response.data.items.length > 0) {
                 const anchorInfo = response.data.items[0];
+                
+                // 输出请求结果到屏幕
+                console.log('[B站MCN脚本] 查询成功，主播信息:', anchorInfo);
+                
                 const detailedInfo = createDetailedInfo(anchorInfo);
                 detailedInfo.setAttribute('data-uid', uid);
                 document.body.appendChild(detailedInfo);
@@ -794,6 +810,10 @@
 
             if (response.code === 0 && response.data.items && response.data.items.length > 0) {
                 const anchorInfo = response.data.items[0];
+                
+                // 输出请求结果到屏幕
+                console.log('[B站MCN脚本] 查询成功，主播信息:', anchorInfo);
+                
                 const detailedInfo = createDetailedInfo(anchorInfo);
                 detailedInfo.setAttribute('data-room-id', roomId);
                 document.body.appendChild(detailedInfo);
