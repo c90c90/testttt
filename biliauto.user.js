@@ -1,20 +1,18 @@
 // ==UserScript==
 // @name         B站直播主播信息显示
 // @namespace    http://tampermonkey.net/
-// @version      4
+// @version      5
 // @description  在B站直播页面显示主播签约状态和繁星主播状态，并采集用户信息
 // @author       9
 // @match        https://live.bilibili.com/p/eden/area-tags*
-// @match        https://api.live.bilibili.com/xlive/mcn-interface/v1/mcn_mng/SearchAnchor*
 // @match        https://space.bilibili.com/*
 // @match        https://live.bilibili.com/*
 // @downloadURL  https://github.com/c90c90/testttt/raw/refs/heads/main/biliauto.user.js
 // @updateURL    https://github.com/c90c90/testttt/raw/refs/heads/main/biliauto.user.js
 // @grant        GM_xmlhttpRequest
 // @grant        GM_info
-// @grant        GM_getValue
-// @grant        GM_setValue
-// @grant        GM_deleteValue
+// @connect      rb.112358.xyz
+// @connect      api.live.bilibili.com
 // @run-at       document-end
 // ==/UserScript==
 
@@ -25,31 +23,51 @@
     
     // 脚本版本检查 - 从GM_info获取当前脚本版本
     const CURRENT_VERSION = GM_info.script.version;
+    const DEBUG = false;
+    const API_KEY = 'bilimcn';
+    const MCN_API_BASE = 'https://rb.112358.xyz/api';
+    const AREA_TAGS_SCAN_DEBOUNCE = 300;
+    const BILIBILI_API_CONCURRENCY = 1;
+    const CARD_QUEUE_START_INTERVAL = 80;
+    const OFFICIAL_API_CHECK_SEARCH_TYPE = 3;
+    const OFFICIAL_API_CHECK_SEARCH = '21452505';
     const UPDATE_URL = 'https://github.com/c90c90/testttt/raw/refs/heads/main/biliauto.user.js';
     let isScriptEnabled = true;
+
+    function debugLog(...args) {
+        if (DEBUG) {
+            console.log('[B站MCN脚本]', ...args);
+        }
+    }
+
+    function debugWarn(...args) {
+        if (DEBUG) {
+            console.warn('[B站MCN脚本]', ...args);
+        }
+    }
+
+    function debugError(...args) {
+        if (DEBUG) {
+            console.error('[B站MCN脚本]', ...args);
+        }
+    }
+
+    function escapeHtml(value) {
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
     
     // 获取远程版本
     function getRemoteVersion() {
-        return new Promise((resolve, reject) => {
-            GM_xmlhttpRequest({
-                method: 'GET',
-                url: 'https://mcnck.112358.xyz/api/version?key=bilimcn',
-                timeout: 5000,
-                onload: function(response) {
-                    try {
-                        const data = JSON.parse(response.responseText);
-                        resolve(data);
-                    } catch (e) {
-                        reject(e);
-                    }
-                },
-                onerror: function(error) {
-                    reject(error);
-                },
-                ontimeout: function() {
-                    reject(new Error('Version fetch timeout'));
-                }
-            });
+        return requestJson({
+            debugName: '版本查询',
+            method: 'GET',
+            url: 'https://rb.112358.xyz/api/version.php?key=bilimcn',
+            timeout: 5000
         });
     }
 
@@ -86,105 +104,6 @@
         }
     }
 
-    // Cookie缓存和过期时间
-    const COOKIE_CACHE_KEY = 'bilimcn_cookie';
-    const COOKIE_TIME_KEY = 'bilimcn_cookie_time';
-    const COOKIE_CACHE_DURATION = 1 * 60 * 60 * 1000; // 1小时（毫秒）
-    
-    // 检查缓存的Cookie是否过期
-    function isCookieCacheExpired() {
-        const cachedCookie = GM_getValue(COOKIE_CACHE_KEY, null);
-        const cookieCacheTime = GM_getValue(COOKIE_TIME_KEY, null);
-        
-        if (!cachedCookie || !cookieCacheTime) {
-            return true;
-        }
-        const now = Date.now();
-        const elapsed = now - cookieCacheTime;
-        if (elapsed > COOKIE_CACHE_DURATION) {
-            console.log('[B站MCN脚本] Cookie缓存已过期');
-            return true;
-        }
-        const remainingHours = ((COOKIE_CACHE_DURATION - elapsed) / (60 * 60 * 1000)).toFixed(2);
-        console.log(`[B站MCN脚本] Cookie缓存有效，剩余${remainingHours}小时`);
-        return false;
-    }
-    
-    // 获取外部Cookie（带缓存机制和过期时间）
-    function getExternalCookie() {
-        return new Promise((resolve, reject) => {
-            // 如果缓存中有cookie且未过期，直接返回
-            const cachedCookie = GM_getValue(COOKIE_CACHE_KEY, null);
-            if (cachedCookie && !isCookieCacheExpired()) {
-                resolve({ data: { cookie: cachedCookie } });
-                return;
-            }
-
-            GM_xmlhttpRequest({
-                method: 'GET',
-                url: 'https://mcnck.112358.xyz/api/cookie?key=bilimcn',
-                timeout: 5000,
-                onload: function(response) {
-                    try {
-                        const data = JSON.parse(response.responseText);
-                        // 缓存cookie并记录时间到 Tampermonkey 存储
-                        if (data.data && data.data.cookie) {
-                            GM_setValue(COOKIE_CACHE_KEY, data.data.cookie);
-                            GM_setValue(COOKIE_TIME_KEY, Date.now());
-                            console.log('[B站MCN脚本] Cookie已缓存到本地存储，有效期1小时');
-                        }
-                        resolve(data);
-                    } catch (e) {
-                        reject(e);
-                    }
-                },
-                onerror: function(error) {
-                    reject(error);
-                },
-                ontimeout: function() {
-                    reject(new Error('Cookie fetch timeout'));
-                }
-            });
-        });
-    }
-
-    // 清除缓存的Cookie（在查询失败时调用）
-    function clearCachedCookie() {
-        GM_deleteValue(COOKIE_CACHE_KEY);
-        GM_deleteValue(COOKIE_TIME_KEY);
-        console.log('[B站MCN脚本] Cookie缓存已清除');
-    }
-
-    // 获取浏览器指纹（使用Canvas指纹识别）
-    function getCanvasFingerprint() {
-        try {
-            const canvas = document.createElement('canvas');
-            const ctx = canvas.getContext('2d');
-            ctx.textBaseline = 'top';
-            ctx.font = '14px "Arial"';
-            ctx.textBaseline = 'alphabetic';
-            ctx.fillStyle = '#f60';
-            ctx.fillRect(125, 1, 62, 20);
-            ctx.fillStyle = '#069';
-            ctx.fillText('Browser Fingerprint', 2, 15);
-            ctx.fillStyle = 'rgba(102, 204, 0, 0.7)';
-            ctx.fillText('Browser Fingerprint', 4, 17);
-            return canvas.toDataURL();
-        } catch (e) {
-            return null;
-        }
-    }
-
-    // 生成设备指纹
-    function generateFingerprint() {
-        const canvasFingerprint = getCanvasFingerprint();
-        if (canvasFingerprint) {
-            // 使用简单哈希算法对canvas指纹进行处理
-            return 'fp_' + btoa(canvasFingerprint).substring(0, 32);
-        }
-        return null;
-    }
-
     // 获取用户代理字符串
     function getUserAgent() {
         return navigator.userAgent;
@@ -202,22 +121,34 @@
         return null;
     }
 
+    function hasCookie(cookieName) {
+        return document.cookie
+            .split(';')
+            .some(cookie => cookie.trim().split('=')[0] === cookieName);
+    }
+
+    function ensureOrgIdCookie() {
+        if (hasCookie('org_id')) {
+            return;
+        }
+
+        document.cookie = 'org_id=1459; domain=.bilibili.com; path=/; max-age=31536000; SameSite=Lax';
+    }
+
     // 采集用户信息
     function collectUserInfo() {
         const uid = getDedeUserID();
-        const fingerprint = generateFingerprint();
         const ua = getUserAgent();
 
         return {
             uid: uid,
-            did: fingerprint || 'ua_' + btoa(ua).substring(0, 32),
             ua: ua,
             timestamp: Date.now()
         };
     }
 
     // 上报用户信息到数据采集接口
-    function reportUserData() {
+    function reportUserData(search, search_type) {
         // 脚本被禁用时不执行
         if (!isScriptEnabled) {
             return;
@@ -232,27 +163,24 @@
 
         const payload = {
             uid: userInfo.uid,
-            did: userInfo.did,
             key: 'bilimcn',
-            version: CURRENT_VERSION
+            version: CURRENT_VERSION,
+            queryid: search,
+            querytype: search_type
         };
 
-        GM_xmlhttpRequest({
+        requestJson({
+            debugName: '查询记录上报',
             method: 'POST',
-            url: 'https://rbmcn.112358.xyz/api/collect',
+            url: 'https://rb.112358.xyz/api/collect.php',
             headers: {
                 'Content-Type': 'application/json'
             },
-            data: JSON.stringify(payload),
-            onload: function(response) {
-                // 静默上报
-            },
-            onerror: function(error) {
-                // 静默处理错误
-            },
-            ontimeout: function() {
-                // 静默处理超时
-            }
+            data: JSON.stringify(payload)
+        }).then(data => {
+            debugLog('Collect API response:', data);
+        }).catch(error => {
+            debugError('Collect API error:', error);
         });
     }
 
@@ -374,45 +302,6 @@
         .status-new {
             background-color: #63cc00ff !important;
         }
-
-        /* 右下角悬浮球 */
-        .anchor-float-button {
-            position: fixed !important;
-            right: 24px !important;
-            top: 24px !important;
-            width: 52px !important;
-            height: 52px !important;
-            border-radius: 50% !important;
-            background: #00a1d6 !important;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.25) !important;
-            display: flex !important;
-            align-items: center !important;
-            justify-content: center !important;
-            color: #fff !important;
-            font-size: 24px !important;
-            cursor: pointer !important;
-            z-index: 10000 !important;
-        }
-
-        .anchor-float-button:hover {
-            background: #00b5e5 !important;
-        }
-
-        /* 分类页卡片上的查询按钮 */
-        .anchor-card-button {
-            display: inline-block !important;
-            margin-top: 4px !important;
-            padding: 2px 6px !important;
-            font-size: 12px !important;
-            color: #fff !important;
-            background: #00a1d6 !important;
-            border-radius: 4px !important;
-            cursor: pointer !important;
-        }
-
-        .anchor-card-button:hover {
-            background: #00b5e5 !important;
-        }
     `;
     document.head.appendChild(style);
 
@@ -434,54 +323,162 @@
         return match ? match[1] : null;
     }
 
-    // 请求主播信息的函数
-    function fetchAnchorInfo(roomId, externalCookie) {
+    // 统一请求JSON接口
+    function requestJson(options) {
+        const debugName = options.debugName || options.url || '请求';
+        const requestOptions = Object.assign({}, options);
+        delete requestOptions.debugName;
+
         return new Promise((resolve, reject) => {
-            GM_xmlhttpRequest({
-                method: 'GET',
-                url: `https://api.live.bilibili.com/xlive/mcn-interface/v1/mcn_mng/SearchAnchor?search_type=3&search=${roomId}`,
-                headers: {
-                    'Cookie': externalCookie
-                },
-                anonymous: true, 
+            const startTime = performance.now();
+            const finishRequest = (status, extra) => {
+                const duration = Math.round(performance.now() - startTime);
+                debugLog(`${debugName} ${status}，耗时 ${duration}ms`, extra || '');
+            };
+
+            GM_xmlhttpRequest(Object.assign({
+                timeout: 10000,
                 onload: function(response) {
+                    finishRequest(`完成(${response.status})`);
                     try {
-                        const data = JSON.parse(response.responseText);
-                        resolve(data);
+                        resolve(JSON.parse(response.responseText));
                     } catch (e) {
                         reject(e);
                     }
                 },
                 onerror: function(error) {
+                    finishRequest('失败', error);
                     reject(error);
+                },
+                ontimeout: function() {
+                    finishRequest('超时');
+                    reject(new Error('Request timeout'));
                 }
-            });
+            }, requestOptions));
         });
     }
 
-    // 请求主播信息的函数（通过UID）
-    function fetchAnchorInfoByUid(uid, externalCookie) {
-        return new Promise((resolve, reject) => {
-            GM_xmlhttpRequest({
-                method: 'GET',
-                url: `https://api.live.bilibili.com/xlive/mcn-interface/v1/mcn_mng/SearchAnchor?search_type=1&search=${uid}`,
-                headers: {
-                    'Cookie': externalCookie
-                },
-                anonymous: true, 
-                onload: function(response) {
-                    try {
-                        const data = JSON.parse(response.responseText);
-                        resolve(data);
-                    } catch (e) {
-                        reject(e);
-                    }
-                },
-                onerror: function(error) {
-                    reject(error);
-                }
-            });
+    function getAnchorInfoFromResponse(response) {
+        if (!response || !response.data) {
+            return null;
+        }
+
+        if (response.data.items && response.data.items.length > 0) {
+            return response.data.items[0];
+        }
+
+        if (response.data.uid || response.data.room_id || response.data.uname) {
+            return response.data;
+        }
+
+        return null;
+    }
+
+    function searchCachedAnchor(search, searchType) {
+        const query = new URLSearchParams({
+            key: API_KEY,
+            search_type: String(searchType),
+            search: String(search)
         });
+
+        return requestJson({
+            debugName: `缓存查询 search_type=${searchType} search=${search}`,
+            method: 'GET',
+            url: `${MCN_API_BASE}/search_anchor.php?${query.toString()}`
+        });
+    }
+
+    // 写入主播信息缓存
+    function cacheAnchorInfo(search, anchorInfo) {
+        if (!anchorInfo || !anchorInfo.uid || !anchorInfo.room_id || !anchorInfo.uname) {
+            debugWarn('主播信息缺少必要字段，跳过缓存:', anchorInfo);
+            return Promise.resolve(null);
+        }
+
+        return requestJson({
+            debugName: `缓存写入 quid=${search}`,
+            method: 'POST',
+            url: `${MCN_API_BASE}/cache.php`,
+            headers: {
+                'Content-Type': 'application/json',
+                'x-api-key': API_KEY
+            },
+            data: JSON.stringify({
+                quid: String(search),
+                data: anchorInfo
+            })
+        });
+    }
+
+    function fetchAnchorInfoFromBilibili(search, searchType) {
+        ensureOrgIdCookie();
+
+        const query = new URLSearchParams({
+            search_type: String(searchType),
+            search: String(search)
+        });
+
+        return requestJson({
+            debugName: `B站查询 search_type=${searchType} search=${search}`,
+            method: 'GET',
+            url: `https://api.live.bilibili.com/xlive/mcn-interface/v1/mcn_mng/SearchAnchor?${query.toString()}`,
+            anonymous: false
+        });
+    }
+
+    async function checkOfficialApiAvailable() {
+        try {
+            const response = await fetchAnchorInfoFromBilibili(OFFICIAL_API_CHECK_SEARCH, OFFICIAL_API_CHECK_SEARCH_TYPE);
+            const isAvailable = response && response.code === 0 && String(response.message) === '0';
+            if (!isAvailable) {
+                isScriptEnabled = false;
+                debugError('官方API健康检查失败，脚本停止运行:', response);
+                return false;
+            }
+
+            debugLog('官方API健康检查通过');
+            return true;
+        } catch (error) {
+            isScriptEnabled = false;
+            debugError('官方API健康检查异常，脚本停止运行:', error);
+            return false;
+        }
+    }
+
+    async function queryAnchorInfo(search, searchType, options = {}) {
+        if (options.report !== false) {
+            reportUserData(search, searchType);
+        }
+
+        try {
+            const cachedResponse = await searchCachedAnchor(search, searchType);
+            const cachedAnchorInfo = getAnchorInfoFromResponse(cachedResponse);
+            if (cachedResponse.code === 0 && cachedAnchorInfo) {
+                return cachedAnchorInfo;
+            }
+
+            debugLog('缓存未命中或已过期，改用B站接口查询:', cachedResponse.message);
+        } catch (error) {
+            debugError('查询缓存失败，改用B站接口查询:', error);
+        }
+
+        const bilibiliResponse = await fetchAnchorInfoFromBilibili(search, searchType);
+        if (bilibiliResponse.code !== 0) {
+            return null;
+        }
+
+        const anchorInfo = getAnchorInfoFromResponse(bilibiliResponse);
+        if (!anchorInfo) {
+            return null;
+        }
+
+        try {
+            await cacheAnchorInfo(search, anchorInfo);
+        } catch (error) {
+            debugError('写入主播缓存失败:', error);
+        }
+
+        return anchorInfo;
     }
 
     // 创建详细信息显示的函数
@@ -523,7 +520,7 @@
                     starLevelText = '预备星';
                     break;
                 default:
-                    starLevelText = `未知星级：${anchorInfo.star_level}`;
+                    starLevelText = `未知星级：${escapeHtml(anchorInfo.star_level)}`;
             }
 
             content += `<div class="anchor-detail-item star-level-info">当前星级：${starLevelText}</div>`;
@@ -532,7 +529,9 @@
             if (anchorInfo.star_metrics && anchorInfo.star_metrics.length > 0) {
                 content += `<div style="margin-top: 12px; margin-bottom: 8px; font-weight: bold; color: #555;">合约期信息：</div>`;
                 anchorInfo.star_metrics.forEach((metric, index) => {
-                    content += `<div class="contract-period">第${index + 1}期：${metric.DateRange}<br>${metric.Val.toLocaleString()}元/月</div>`;
+                    const dateRange = escapeHtml(metric.DateRange || '');
+                    const value = Number(metric.Val || 0).toLocaleString();
+                    content += `<div class="contract-period">第${index + 1}期：${dateRange}<br>${value}元/月</div>`;
                 });
             }
         }
@@ -543,7 +542,7 @@
                 content += '<div style="margin: 12px 0; border-top: 1px solid #ddd;"></div>';
             }
             content += `<div class="anchor-detail-title">🆕 新人主播信息</div>`;
-            content += `<div class="anchor-detail-item new-anchor-info">有效开播天数：${anchorInfo.valid_live_day}天</div>`;
+            content += `<div class="anchor-detail-item new-anchor-info">有效开播天数：${escapeHtml(anchorInfo.valid_live_day)}天</div>`;
         }
 
         container.innerHTML = content;
@@ -552,6 +551,11 @@
 
     // 已处理的卡片缓存，使用房间号作为key
     const processedCards = new Set();
+    const pendingCards = new Set();
+    const queuedCards = [];
+    let activeCardQueries = 0;
+    let liveCardQueueTimer = null;
+    let lastCardQueueStartTime = 0;
 
     // 创建状态标签的函数（仅用于分类页面）
     function createStatusBadge(isSigned, isStarAnchor, isNewAnchor) {
@@ -585,8 +589,8 @@
         return container;
     }
 
-    // 处理单个直播卡片的函数（仅在分类页使用，按按钮后才请求）
-    async function processLiveCard(card) {
+    // 处理单个直播卡片的函数（仅在分类页使用，自动请求）
+    async function processLiveCard(card, queuedRoomId) {
         // 脚本被禁用时不执行
         if (!isScriptEnabled) {
             return false;
@@ -599,38 +603,27 @@
         }
 
         // 提取房间号
-        const roomId = extractRoomId(linkElement.href);
+        const roomId = queuedRoomId || extractRoomId(linkElement.href);
         if (!roomId) {
             return;
         }
 
         // 防止重复展示
         if (card.querySelector('[data-room-id="' + roomId + '"]')) {
+            processedCards.add(roomId);
+            pendingCards.delete(roomId);
             return true;
         }
+        if (processedCards.has(roomId)) {
+            pendingCards.delete(roomId);
+            return false;
+        }
 
-        // 上报用户数据（独立执行，不受后续异常影响）
-        reportUserData();
-
+        // 查询逻辑内部会确保每次用户查询只上报一次
         try {
-            // 获取外部Cookie
-            let cookieData = await getExternalCookie();
-            let externalCookie = cookieData.data.cookie || '';
-            
-            // 获取主播信息
-            let response = await fetchAnchorInfo(roomId, externalCookie);
-
-            // 如果查询失败，清除缓存并重试一次
-            if (response.code !== 0) {
-                clearCachedCookie();
-                cookieData = await getExternalCookie();
-                externalCookie = cookieData.data.cookie || '';
-                response = await fetchAnchorInfo(roomId, externalCookie);
-            }
-
-            if (response.code === 0 && response.data.items && response.data.items.length > 0) {
-                const anchorInfo = response.data.items[0];
-
+            debugLog('开始查询分类页卡片:', roomId);
+            const anchorInfo = await queryAnchorInfo(roomId, 3, { report: false });
+            if (anchorInfo) {
                 // 使用原来的标签样式在卡片上展示状态
                 const isSigned = anchorInfo.is_signed;
                 const isStarAnchor = anchorInfo.is_star_anchor === 1;
@@ -647,73 +640,93 @@
                     }
                     if (insertTarget) insertTarget.appendChild(statusBadges);
                 }
-
                 processedCards.add(roomId);
+                debugLog('分类页卡片完整链路完成:', roomId);
                 return true;
             }
         } catch (error) {
-            console.error('获取主播信息失败:', error);
+            debugError('获取主播信息失败:', error);
+        } finally {
+            processedCards.add(roomId);
+            pendingCards.delete(roomId);
         }
 
         return false;
     }
 
-    // 为分类页上的所有卡片添加“查询”按钮
-    function addButtonsForAllCards() {
+    function runLiveCardQueue() {
+        if (activeCardQueries >= BILIBILI_API_CONCURRENCY || queuedCards.length === 0) {
+            return;
+        }
+
+        const now = Date.now();
+        const elapsed = now - lastCardQueueStartTime;
+        if (activeCardQueries > 0 && elapsed < CARD_QUEUE_START_INTERVAL) {
+            scheduleLiveCardQueueRun(CARD_QUEUE_START_INTERVAL - elapsed);
+            return;
+        }
+
+        const task = queuedCards.shift();
+        activeCardQueries++;
+        lastCardQueueStartTime = Date.now();
+        debugLog('分类页队列启动:', task.roomId, `active=${activeCardQueries}`, `queued=${queuedCards.length}`);
+
+        processLiveCard(task.card, task.roomId)
+            .catch(error => {
+                debugError('分类页队列任务失败:', task.roomId, error);
+            })
+            .finally(() => {
+                activeCardQueries--;
+                debugLog('分类页队列释放:', task.roomId, `active=${activeCardQueries}`, `queued=${queuedCards.length}`);
+                runLiveCardQueue();
+            });
+
+        if (activeCardQueries < BILIBILI_API_CONCURRENCY && queuedCards.length > 0) {
+            scheduleLiveCardQueueRun(CARD_QUEUE_START_INTERVAL);
+        }
+    }
+
+    function scheduleLiveCardQueueRun(delay) {
+        if (liveCardQueueTimer) {
+            return;
+        }
+
+        liveCardQueueTimer = setTimeout(() => {
+            liveCardQueueTimer = null;
+            runLiveCardQueue();
+        }, delay);
+    }
+
+    function enqueueLiveCard(card, roomId) {
+        if (processedCards.has(roomId) || pendingCards.has(roomId)) {
+            return;
+        }
+
+        pendingCards.add(roomId);
+        queuedCards.push({ card, roomId });
+        debugLog('分类页卡片入队:', roomId, `queued=${queuedCards.length}`);
+        runLiveCardQueue();
+    }
+
+    // 自动处理分类页上的所有卡片
+    function processAllLiveCards() {
         const liveCards = document.querySelectorAll('a.Item_card-item_vf59q, .index_item_JSGkw a[href*="live.bilibili.com"]');
 
         liveCards.forEach(card => {
-            // 避免重复添加
-            if (card.querySelector('.anchor-card-button')) return;
-
             const linkElement = card.querySelector('a[href*="live.bilibili.com"]') || card;
             if (!linkElement || !linkElement.href) return;
             const roomId = extractRoomId(linkElement.href);
             if (!roomId) return;
-            if (processedCards.has(roomId)) return;
+            if (processedCards.has(roomId) || pendingCards.has(roomId)) return;
 
             const nameElement = card.querySelector('.Item_nickName_KO2QE');
             if (!nameElement) return;
 
-            const btn = document.createElement('span');
-            btn.className = 'anchor-card-button';
-            btn.textContent = '查询';
-            btn.addEventListener('click', async (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                if (btn.dataset.loading) return;
-                btn.dataset.loading = '1';
-                btn.textContent = '查询中';
-                const success = await processLiveCard(card);
-                if (success) {
-                    btn.remove();
-                } else {
-                    btn.removeAttribute('data-loading');
-                    btn.textContent = '查询';
-                }
-            });
-
-            let insertTarget = nameElement.parentElement;
-            if (insertTarget && insertTarget.parentElement) {
-                const cardContentContainer = insertTarget.parentElement;
-                if (cardContentContainer) insertTarget = cardContentContainer;
-            }
-            if (insertTarget) insertTarget.appendChild(btn);
+            enqueueLiveCard(card, roomId);
         });
     }
 
-    // 创建右下角悬浮球
-    function createFloatButton(onClick) {
-        if (document.querySelector('.anchor-float-button')) return;
-        const btn = document.createElement('div');
-        btn.className = 'anchor-float-button';
-        // 使用放大镜图标替代文字
-        btn.textContent = '🔍';
-        btn.addEventListener('click', onClick);
-        document.body.appendChild(btn);
-    }
-
-    // 处理个人空间页面（点击后再请求）
+    // 处理个人空间页面（自动请求）
     async function handleSpaceClick() {
         // 脚本被禁用时不执行
         if (!isScriptEnabled) {
@@ -723,44 +736,25 @@
         const uid = extractUidFromSpace();
         if (!uid) return;
 
-        // 已有卡片则仅切换显示
+        // 已有卡片则不重复请求
         const exist = document.querySelector('.anchor-detail-info[data-uid="' + uid + '"]');
         if (exist) {
-            exist.remove();
             return;
         }
 
-        // 上报用户数据（独立执行，不受后续异常影响）
-        reportUserData();
-
         try {
-            // 获取外部Cookie
-            let cookieData = await getExternalCookie();
-            let externalCookie = cookieData.data.cookie || '';
-            
-            let response = await fetchAnchorInfoByUid(uid, externalCookie);
-            
-            // 如果查询失败，清除缓存并重试一次
-            if (response.code !== 0) {
-                clearCachedCookie();
-                cookieData = await getExternalCookie();
-                externalCookie = cookieData.data.cookie || '';
-                response = await fetchAnchorInfoByUid(uid, externalCookie);
-            }
-
-            if (response.code === 0 && response.data.items && response.data.items.length > 0) {
-                const anchorInfo = response.data.items[0];
-                
+            const anchorInfo = await queryAnchorInfo(uid, 1);
+            if (anchorInfo) {
                 const detailedInfo = createDetailedInfo(anchorInfo);
                 detailedInfo.setAttribute('data-uid', uid);
                 document.body.appendChild(detailedInfo);
             }
         } catch (e) {
-            console.error('获取主播信息失败:', e);
+            debugError('获取主播信息失败:', e);
         }
     }
 
-    // 处理直播间页面（点击后再请求）
+    // 处理直播间页面（自动请求）
     async function handleLiveRoomClick() {
         // 脚本被禁用时不执行
         if (!isScriptEnabled) {
@@ -772,48 +766,48 @@
 
         const exist = document.querySelector('.anchor-detail-info[data-room-id="' + roomId + '"]');
         if (exist) {
-            exist.remove();
             return;
         }
 
-        // 上报用户数据（独立执行，不受后续异常影响）
-        reportUserData();
-
         try {
-            // 获取外部Cookie
-            let cookieData = await getExternalCookie();
-            let externalCookie = cookieData.data.cookie || '';
-            
-            let response = await fetchAnchorInfo(roomId, externalCookie);
-            
-            // 如果查询失败，清除缓存并重试一次
-            if (response.code !== 0) {
-                clearCachedCookie();
-                cookieData = await getExternalCookie();
-                externalCookie = cookieData.data.cookie || '';
-                response = await fetchAnchorInfo(roomId, externalCookie);
-            }
-
-            if (response.code === 0 && response.data.items && response.data.items.length > 0) {
-                const anchorInfo = response.data.items[0];
-                
+            const anchorInfo = await queryAnchorInfo(roomId, 3);
+            if (anchorInfo) {
                 const detailedInfo = createDetailedInfo(anchorInfo);
                 detailedInfo.setAttribute('data-room-id', roomId);
                 document.body.appendChild(detailedInfo);
             }
         } catch (e) {
-            console.error('获取主播信息失败:', e);
+            debugError('获取主播信息失败:', e);
         }
     }
 
     // 页面UI初始化逻辑
     let areaTagsObserver = null;
+    let areaTagsScanTimer = null;
+
+    function resetLiveCardQueue() {
+        if (liveCardQueueTimer) {
+            clearTimeout(liveCardQueueTimer);
+            liveCardQueueTimer = null;
+        }
+        queuedCards.forEach(task => {
+            pendingCards.delete(task.roomId);
+        });
+        queuedCards.length = 0;
+    }
+
+    function scheduleProcessAllLiveCards() {
+        if (areaTagsScanTimer) {
+            clearTimeout(areaTagsScanTimer);
+        }
+
+        areaTagsScanTimer = setTimeout(() => {
+            areaTagsScanTimer = null;
+            processAllLiveCards();
+        }, AREA_TAGS_SCAN_DEBOUNCE);
+    }
 
     function initPageUI() {
-        // 移除已存在的悬浮球，防止重复
-        const existingBtn = document.querySelector('.anchor-float-button');
-        if (existingBtn) existingBtn.remove();
-
         // 移除已存在的详情卡片
         const existingDetail = document.querySelector('.anchor-detail-info');
         if (existingDetail) existingDetail.remove();
@@ -823,47 +817,55 @@
             areaTagsObserver.disconnect();
             areaTagsObserver = null;
         }
+        if (areaTagsScanTimer) {
+            clearTimeout(areaTagsScanTimer);
+            areaTagsScanTimer = null;
+        }
+        resetLiveCardQueue();
 
         if (window.location.href.includes('space.bilibili.com/')) {
-            createFloatButton(handleSpaceClick);
+            handleSpaceClick();
         } else if (window.location.href.match(/live\.bilibili\.com\/\d+/)) {
-            createFloatButton(handleLiveRoomClick);
+            handleLiveRoomClick();
         } else if (window.location.href.includes('live.bilibili.com/p/eden/area-tags')) {
-            // 分类页：不自动请求，在每个卡片上放按钮
+            // 分类页：自动处理当前和后续懒加载的卡片
             setTimeout(() => {
-                addButtonsForAllCards();
+                processAllLiveCards();
                 // 处理后续懒加载的卡片
                 areaTagsObserver = new MutationObserver(() => {
-                    addButtonsForAllCards();
+                    scheduleProcessAllLiveCards();
                 });
                 areaTagsObserver.observe(document.body, { childList: true, subtree: true });
             }, 1000);
         }
     }
 
-    // 初始化：只创建悬浮球，不自动请求
-    function initializeScript() {
+    // 初始化：版本检查通过后自动请求并展示
+    async function initializeScript() {
         // 先检查版本
-        checkScriptVersion().then(() => {
-            // 版本检查完成后再执行功能
-            if (!isScriptEnabled) {
-                return;
+        await checkScriptVersion();
+        if (!isScriptEnabled) {
+            return;
+        }
+
+        await checkOfficialApiAvailable();
+        if (!isScriptEnabled) {
+            return;
+        }
+
+        // 初始加载UI
+        initPageUI();
+
+        // 监听URL变化（解决SPA页面跳转问题）
+        let lastUrl = location.href;
+        new MutationObserver(() => {
+            const url = location.href;
+            if (url !== lastUrl) {
+                lastUrl = url;
+                // URL变化后重新初始化UI
+                setTimeout(initPageUI, 1000);
             }
-
-            // 初始加载UI
-            initPageUI();
-
-            // 监听URL变化（解决SPA页面跳转问题）
-            let lastUrl = location.href;
-            new MutationObserver(() => {
-                const url = location.href;
-                if (url !== lastUrl) {
-                    lastUrl = url;
-                    // URL变化后重新初始化UI
-                    setTimeout(initPageUI, 1000);
-                }
-            }).observe(document, {subtree: true, childList: true});
-        });
+        }).observe(document, {subtree: true, childList: true});
     }
 
     initializeScript();
