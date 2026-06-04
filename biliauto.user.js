@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         B站直播主播信息显示
 // @namespace    http://tampermonkey.net/
-// @version      5
+// @version      6
 // @description  在B站直播页面显示主播签约状态和繁星主播状态，并采集用户信息
 // @author       9
 // @match        https://live.bilibili.com/p/eden/area-tags*
@@ -302,6 +302,45 @@
         .status-new {
             background-color: #63cc00ff !important;
         }
+
+        .status-official {
+            background-color: #8E24AA !important;
+        }
+
+        .status-not-official {
+            background-color: #607D8B !important;
+        }
+
+        .status-history-entry {
+            background-color: #795548 !important;
+        }
+
+        .status-no-history-entry {
+            background-color: #9E9E9E !important;
+        }
+
+        .anchor-refresh-button {
+            display: inline-block !important;
+            margin-left: 4px !important;
+            margin-bottom: 6px !important;
+            padding: 4px 8px !important;
+            border: none !important;
+            border-radius: 4px !important;
+            font-size: 12px !important;
+            font-weight: bold !important;
+            color: #fff !important;
+            background: #00a1d6 !important;
+            cursor: pointer !important;
+        }
+
+        .anchor-refresh-button:hover {
+            background: #00b5e5 !important;
+        }
+
+        .anchor-refresh-button[disabled] {
+            opacity: 0.65 !important;
+            cursor: wait !important;
+        }
     `;
     document.head.appendChild(style);
 
@@ -454,7 +493,10 @@
             const cachedResponse = await searchCachedAnchor(search, searchType);
             const cachedAnchorInfo = getAnchorInfoFromResponse(cachedResponse);
             if (cachedResponse.code === 0 && cachedAnchorInfo) {
-                return cachedAnchorInfo;
+                return {
+                    anchorInfo: cachedAnchorInfo,
+                    source: 'cache'
+                };
             }
 
             debugLog('缓存未命中或已过期，改用B站接口查询:', cachedResponse.message);
@@ -478,19 +520,48 @@
             debugError('写入主播缓存失败:', error);
         }
 
+        return {
+            anchorInfo: anchorInfo,
+            source: 'official'
+        };
+    }
+
+    async function refreshAnchorInfo(search, searchType) {
+        reportUserData(search, searchType);
+
+        const bilibiliResponse = await fetchAnchorInfoFromBilibili(search, searchType);
+        if (bilibiliResponse.code !== 0) {
+            return null;
+        }
+
+        const anchorInfo = getAnchorInfoFromResponse(bilibiliResponse);
+        if (!anchorInfo) {
+            return null;
+        }
+
+        try {
+            await cacheAnchorInfo(search, anchorInfo);
+        } catch (error) {
+            debugError('刷新后写入主播缓存失败:', error);
+        }
+
         return anchorInfo;
     }
 
     // 创建详细信息显示的函数
-    function createDetailedInfo(anchorInfo) {
+    function createDetailedInfo(anchorInfo, options = {}) {
         const container = document.createElement('div');
         container.className = 'anchor-detail-info';
 
         let content = '';
+        const updateButtonHtml = options.showUpdate
+            ? '<button class="anchor-refresh-button" type="button">更新</button>'
+            : '';
 
         // 添加标题栏
         content += `<div class="anchor-detail-header">
             <span style="font-weight: bold; color: #333;">主播信息</span>
+            <span>${updateButtonHtml}</span>
             <button class="anchor-detail-close" onclick="this.parentElement.parentElement.remove();">×</button>
         </div>`;
 
@@ -498,6 +569,10 @@
         content += `<div style="margin-bottom: 12px;">`;
         content += `<span class="status-badge ${anchorInfo.is_signed ? 'status-signed' : 'status-unsigned'}">${anchorInfo.is_signed ? '已签约' : '未签约'}</span>`;
         content += `<span class="status-badge ${anchorInfo.is_star_anchor === 1 ? 'status-star' : 'status-normal'}">${anchorInfo.is_star_anchor === 1 ? '繁星主播' : '普通主播'}</span>`;
+        if (anchorInfo.is_signed) {
+            content += `<span class="status-badge ${anchorInfo.is_official_sign_anchor === 1 ? 'status-official' : 'status-not-official'}">${anchorInfo.is_official_sign_anchor === 1 ? '官签主播' : '非官签主播'}</span>`;
+        }
+        content += `<span class="status-badge ${anchorInfo.is_history_entry === 1 ? 'status-history-entry' : 'status-no-history-entry'}">${anchorInfo.is_history_entry === 1 ? '历史入会' : '无历史入会'}</span>`;
         if (anchorInfo.is_new_anchor === 1) {
             content += `<span class="status-badge status-new">新人</span>`;
         }
@@ -546,6 +621,36 @@
         }
 
         container.innerHTML = content;
+
+        const updateButton = container.querySelector('.anchor-refresh-button');
+        if (updateButton && options.search && options.searchType) {
+            updateButton.addEventListener('click', async (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                if (updateButton.disabled) return;
+
+                updateButton.disabled = true;
+                updateButton.textContent = '更新中';
+                try {
+                    const refreshedAnchorInfo = await refreshAnchorInfo(options.search, options.searchType);
+                    if (refreshedAnchorInfo) {
+                        const refreshedDetail = createDetailedInfo(refreshedAnchorInfo);
+                        if (options.detailAttributeName && options.detailAttributeValue) {
+                            refreshedDetail.setAttribute(options.detailAttributeName, options.detailAttributeValue);
+                        }
+                        container.replaceWith(refreshedDetail);
+                    } else {
+                        updateButton.disabled = false;
+                        updateButton.textContent = '更新';
+                    }
+                } catch (error) {
+                    debugError('手动更新主播信息失败:', error);
+                    updateButton.disabled = false;
+                    updateButton.textContent = '更新';
+                }
+            });
+        }
+
         return container;
     }
 
@@ -558,7 +663,7 @@
     let lastCardQueueStartTime = 0;
 
     // 创建状态标签的函数（仅用于分类页面）
-    function createStatusBadge(isSigned, isStarAnchor, isNewAnchor) {
+    function createStatusBadge(isSigned, isStarAnchor, isNewAnchor, options = {}) {
         // 创建容器元素
         const container = document.createElement('div');
         container.style.display = 'block';
@@ -570,13 +675,15 @@
         signedBadge.className = `status-badge ${isSigned ? 'status-signed' : 'status-unsigned'}`;
         signedBadge.textContent = isSigned ? '已签约' : '未签约';
 
-        // 繁星主播状态标签
-        const starBadge = document.createElement('span');
-        starBadge.className = `status-badge ${isStarAnchor ? 'status-star' : 'status-normal'}`;
-        starBadge.textContent = isStarAnchor ? '繁星主播' : '普通主播';
-
         container.appendChild(signedBadge);
-        container.appendChild(starBadge);
+
+        // 分类页只显示繁星主播标签，普通主播不显示
+        if (isStarAnchor) {
+            const starBadge = document.createElement('span');
+            starBadge.className = 'status-badge status-star';
+            starBadge.textContent = '繁星';
+            container.appendChild(starBadge);
+        }
 
         // 新主播状态标签 - 只有新主播才显示
         if (isNewAnchor) {
@@ -584,6 +691,43 @@
             newBadge.className = 'status-badge status-new';
             newBadge.textContent = '新人';
             container.appendChild(newBadge);
+        }
+
+        if (options.showUpdate && options.search && options.searchType) {
+            const updateButton = document.createElement('button');
+            updateButton.className = 'anchor-refresh-button';
+            updateButton.type = 'button';
+            updateButton.textContent = '更新';
+            updateButton.addEventListener('click', async (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                if (updateButton.disabled) return;
+
+                updateButton.disabled = true;
+                updateButton.textContent = '更新中';
+                try {
+                    const refreshedAnchorInfo = await refreshAnchorInfo(options.search, options.searchType);
+                    if (refreshedAnchorInfo) {
+                        const refreshedBadges = createStatusBadge(
+                            refreshedAnchorInfo.is_signed,
+                            refreshedAnchorInfo.is_star_anchor === 1,
+                            refreshedAnchorInfo.is_new_anchor === 1
+                        );
+                        if (options.roomId) {
+                            refreshedBadges.setAttribute('data-room-id', options.roomId);
+                        }
+                        container.replaceWith(refreshedBadges);
+                    } else {
+                        updateButton.disabled = false;
+                        updateButton.textContent = '更新';
+                    }
+                } catch (error) {
+                    debugError('手动更新分类页主播信息失败:', error);
+                    updateButton.disabled = false;
+                    updateButton.textContent = '更新';
+                }
+            });
+            container.appendChild(updateButton);
         }
 
         return container;
@@ -622,8 +766,9 @@
         // 查询逻辑内部会确保每次用户查询只上报一次
         try {
             debugLog('开始查询分类页卡片:', roomId);
-            const anchorInfo = await queryAnchorInfo(roomId, 3, { report: false });
-            if (anchorInfo) {
+            const queryResult = await queryAnchorInfo(roomId, 3, { report: false });
+            if (queryResult && queryResult.anchorInfo) {
+                const anchorInfo = queryResult.anchorInfo;
                 // 使用原来的标签样式在卡片上展示状态
                 const isSigned = anchorInfo.is_signed;
                 const isStarAnchor = anchorInfo.is_star_anchor === 1;
@@ -631,7 +776,12 @@
 
                 const nameElement = card.querySelector('.Item_nickName_KO2QE');
                 if (nameElement) {
-                    const statusBadges = createStatusBadge(isSigned, isStarAnchor, isNewAnchor);
+                    const statusBadges = createStatusBadge(isSigned, isStarAnchor, isNewAnchor, {
+                        showUpdate: queryResult.source === 'cache',
+                        search: roomId,
+                        searchType: 3,
+                        roomId: roomId
+                    });
                     statusBadges.setAttribute('data-room-id', roomId);
                     let insertTarget = nameElement.parentElement;
                     if (insertTarget && insertTarget.parentElement) {
@@ -743,9 +893,15 @@
         }
 
         try {
-            const anchorInfo = await queryAnchorInfo(uid, 1);
-            if (anchorInfo) {
-                const detailedInfo = createDetailedInfo(anchorInfo);
+            const queryResult = await queryAnchorInfo(uid, 1);
+            if (queryResult && queryResult.anchorInfo) {
+                const detailedInfo = createDetailedInfo(queryResult.anchorInfo, {
+                    showUpdate: queryResult.source === 'cache',
+                    search: uid,
+                    searchType: 1,
+                    detailAttributeName: 'data-uid',
+                    detailAttributeValue: uid
+                });
                 detailedInfo.setAttribute('data-uid', uid);
                 document.body.appendChild(detailedInfo);
             }
@@ -770,9 +926,15 @@
         }
 
         try {
-            const anchorInfo = await queryAnchorInfo(roomId, 3);
-            if (anchorInfo) {
-                const detailedInfo = createDetailedInfo(anchorInfo);
+            const queryResult = await queryAnchorInfo(roomId, 3);
+            if (queryResult && queryResult.anchorInfo) {
+                const detailedInfo = createDetailedInfo(queryResult.anchorInfo, {
+                    showUpdate: queryResult.source === 'cache',
+                    search: roomId,
+                    searchType: 3,
+                    detailAttributeName: 'data-room-id',
+                    detailAttributeValue: roomId
+                });
                 detailedInfo.setAttribute('data-room-id', roomId);
                 document.body.appendChild(detailedInfo);
             }
