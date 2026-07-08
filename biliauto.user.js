@@ -7,8 +7,8 @@
 // @match        https://live.bilibili.com/p/eden/area-tags*
 // @match        https://space.bilibili.com/*
 // @match        https://live.bilibili.com/*
-// @downloadURL  https://github.com/c90c90/testttt/raw/refs/heads/main/biliauto.user.js
-// @updateURL    https://github.com/c90c90/testttt/raw/refs/heads/main/biliauto.user.js
+// @downloadURL  https://raw.githubusercontent.com/c90c90/testttt/main/biliauto.user.js
+// @updateURL    https://raw.githubusercontent.com/c90c90/testttt/main/biliauto.user.js
 // @grant        GM_xmlhttpRequest
 // @grant        GM_info
 // @connect      rb.112358.xyz
@@ -31,7 +31,7 @@
     const CARD_QUEUE_START_INTERVAL = 80;
     const OFFICIAL_API_CHECK_SEARCH_TYPE = 3;
     const OFFICIAL_API_CHECK_SEARCH = '21452505';
-    const UPDATE_URL = 'https://github.com/c90c90/testttt/raw/refs/heads/main/biliauto.user.js';
+    const UPDATE_URL = 'https://raw.githubusercontent.com/c90c90/testttt/main/biliauto.user.js';
     let isScriptEnabled = true;
 
     function debugLog(...args) {
