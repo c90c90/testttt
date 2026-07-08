@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         B站直播主播信息显示
 // @namespace    http://tampermonkey.net/
-// @version      7
+// @version      8
 // @description  在B站直播页面显示主播签约状态和繁星主播状态，并采集用户信息
 // @author       9
 // @match        https://live.bilibili.com/p/eden/area-tags*
@@ -178,7 +178,7 @@
     }
 
     // 上报用户信息到数据采集接口
-    function reportUserData(search, search_type) {
+    function reportUserData(search, search_type, options = {}) {
         // 脚本被禁用时不执行
         if (!isScriptEnabled) {
             return;
@@ -196,7 +196,9 @@
             key: 'bilimcn',
             version: CURRENT_VERSION,
             queryid: search,
-            querytype: search_type
+            querytype: search_type,
+            cache_hit: options.cacheHit ? 1 : 0,
+            is_area_query: options.isAreaQuery ? 1 : 0
         };
 
         requestJson({
@@ -464,8 +466,14 @@
             return Promise.resolve(null);
         }
 
+        const submitterUid = getDedeUserID();
+        if (!submitterUid) {
+            debugWarn('缺少 DedeUserID，跳过缓存写入');
+            return Promise.resolve(null);
+        }
+
         return requestJson({
-            debugName: `缓存写入 quid=${search}`,
+            debugName: `缓存写入 submitter_uid=${submitterUid} search=${search}`,
             method: 'POST',
             url: `${MCN_API_BASE}/cache.php`,
             headers: {
@@ -473,7 +481,7 @@
                 'x-api-key': API_KEY
             },
             data: JSON.stringify({
-                quid: String(search),
+                quid: String(submitterUid),
                 data: anchorInfo
             })
         });
@@ -518,14 +526,20 @@
     }
 
     async function queryAnchorInfo(search, searchType, options = {}) {
-        if (options.report !== false) {
-            reportUserData(search, searchType);
-        }
+        const shouldReport = options.report !== false;
+        const isAreaQuery = options.isAreaQuery === true;
 
         try {
             const cachedResponse = await searchCachedAnchor(search, searchType);
             const cachedAnchorInfo = getAnchorInfoFromResponse(cachedResponse);
             if (cachedResponse.code === 0 && cachedAnchorInfo) {
+                if (shouldReport) {
+                    reportUserData(search, searchType, {
+                        cacheHit: true,
+                        isAreaQuery: isAreaQuery
+                    });
+                }
+
                 return {
                     anchorInfo: cachedAnchorInfo,
                     source: 'cache'
@@ -537,13 +551,37 @@
             debugError('查询缓存失败，改用B站接口查询:', error);
         }
 
-        const bilibiliResponse = await fetchAnchorInfoFromBilibili(search, searchType);
+        let bilibiliResponse;
+        try {
+            bilibiliResponse = await fetchAnchorInfoFromBilibili(search, searchType);
+        } catch (error) {
+            if (shouldReport) {
+                reportUserData(search, searchType, {
+                    cacheHit: false,
+                    isAreaQuery: isAreaQuery
+                });
+            }
+            throw error;
+        }
+
         if (bilibiliResponse.code !== 0) {
+            if (shouldReport) {
+                reportUserData(search, searchType, {
+                    cacheHit: false,
+                    isAreaQuery: isAreaQuery
+                });
+            }
             return null;
         }
 
         const anchorInfo = getAnchorInfoFromResponse(bilibiliResponse);
         if (!anchorInfo) {
+            if (shouldReport) {
+                reportUserData(search, searchType, {
+                    cacheHit: false,
+                    isAreaQuery: isAreaQuery
+                });
+            }
             return null;
         }
 
@@ -553,22 +591,47 @@
             debugError('写入主播缓存失败:', error);
         }
 
+        if (shouldReport) {
+            reportUserData(search, searchType, {
+                cacheHit: false,
+                isAreaQuery: isAreaQuery
+            });
+        }
+
         return {
             anchorInfo: anchorInfo,
             source: 'official'
         };
     }
 
-    async function refreshAnchorInfo(search, searchType) {
-        reportUserData(search, searchType);
+    async function refreshAnchorInfo(search, searchType, options = {}) {
+        const isAreaQuery = options.isAreaQuery === true;
 
-        const bilibiliResponse = await fetchAnchorInfoFromBilibili(search, searchType);
+        let bilibiliResponse;
+        try {
+            bilibiliResponse = await fetchAnchorInfoFromBilibili(search, searchType);
+        } catch (error) {
+            reportUserData(search, searchType, {
+                cacheHit: false,
+                isAreaQuery: isAreaQuery
+            });
+            throw error;
+        }
+
         if (bilibiliResponse.code !== 0) {
+            reportUserData(search, searchType, {
+                cacheHit: false,
+                isAreaQuery: isAreaQuery
+            });
             return null;
         }
 
         const anchorInfo = getAnchorInfoFromResponse(bilibiliResponse);
         if (!anchorInfo) {
+            reportUserData(search, searchType, {
+                cacheHit: false,
+                isAreaQuery: isAreaQuery
+            });
             return null;
         }
 
@@ -577,6 +640,11 @@
         } catch (error) {
             debugError('刷新后写入主播缓存失败:', error);
         }
+
+        reportUserData(search, searchType, {
+            cacheHit: false,
+            isAreaQuery: isAreaQuery
+        });
 
         return anchorInfo;
     }
@@ -665,7 +733,9 @@
                 updateButton.disabled = true;
                 updateButton.textContent = '更新中';
                 try {
-                    const refreshedAnchorInfo = await refreshAnchorInfo(options.search, options.searchType);
+                    const refreshedAnchorInfo = await refreshAnchorInfo(options.search, options.searchType, {
+                        isAreaQuery: options.isAreaQuery === true
+                    });
                     if (refreshedAnchorInfo) {
                         const refreshedDetail = createDetailedInfo(refreshedAnchorInfo);
                         if (options.detailAttributeName && options.detailAttributeValue) {
@@ -739,7 +809,9 @@
                 updateButton.disabled = true;
                 updateButton.textContent = '更新中';
                 try {
-                    const refreshedAnchorInfo = await refreshAnchorInfo(options.search, options.searchType);
+                    const refreshedAnchorInfo = await refreshAnchorInfo(options.search, options.searchType, {
+                        isAreaQuery: options.isAreaQuery === true
+                    });
                     if (refreshedAnchorInfo) {
                         const refreshedBadges = createStatusBadge(
                             refreshedAnchorInfo.is_signed,
@@ -799,7 +871,7 @@
         // 查询逻辑内部会确保每次用户查询只上报一次
         try {
             debugLog('开始查询分类页卡片:', roomId);
-            const queryResult = await queryAnchorInfo(roomId, 3, { report: false });
+            const queryResult = await queryAnchorInfo(roomId, 3, { isAreaQuery: true });
             if (queryResult && queryResult.anchorInfo) {
                 const anchorInfo = queryResult.anchorInfo;
                 // 使用原来的标签样式在卡片上展示状态
@@ -813,7 +885,8 @@
                         showUpdate: queryResult.source === 'cache',
                         search: roomId,
                         searchType: 3,
-                        roomId: roomId
+                        roomId: roomId,
+                        isAreaQuery: true
                     });
                     statusBadges.setAttribute('data-room-id', roomId);
                     let insertTarget = nameElement.parentElement;
