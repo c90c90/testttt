@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         B站直播主播信息显示
 // @namespace    http://tampermonkey.net/
-// @version      6
+// @version      7
 // @description  在B站直播页面显示主播签约状态和繁星主播状态，并采集用户信息
 // @author       9
 // @match        https://live.bilibili.com/p/eden/area-tags*
@@ -109,30 +109,60 @@
         return navigator.userAgent;
     }
 
-    // 获取 DedeUserID Cookie
-    function getDedeUserID() {
+    function getCookieValue(cookieName) {
         const cookies = document.cookie.split(';');
         for (let cookie of cookies) {
-            const [name, value] = cookie.trim().split('=');
-            if (name === 'DedeUserID') {
-                return decodeURIComponent(value);
+            const [name, ...valueParts] = cookie.trim().split('=');
+            if (name === cookieName) {
+                return decodeURIComponent(valueParts.join('='));
             }
         }
         return null;
     }
 
-    function hasCookie(cookieName) {
-        return document.cookie
-            .split(';')
-            .some(cookie => cookie.trim().split('=')[0] === cookieName);
+    // 获取 DedeUserID Cookie
+    function getDedeUserID() {
+        return getCookieValue('DedeUserID');
     }
 
-    function ensureOrgIdCookie() {
+    function hasCookie(cookieName) {
+        const cookieValue = getCookieValue(cookieName);
+        return cookieValue !== null && cookieValue !== '';
+    }
+
+    function fetchUserAuthListFromBilibili() {
+        return requestJson({
+            debugName: 'B站权限查询',
+            method: 'GET',
+            url: 'https://api.live.bilibili.com/xlive/mcn-interface/v1/auth/GetUserAuthList',
+            anonymous: false
+        });
+    }
+
+    async function ensureOrgIdCookie() {
         if (hasCookie('org_id')) {
-            return;
+            return true;
         }
 
-        document.cookie = 'org_id=1459; domain=.bilibili.com; path=/; max-age=31536000; SameSite=Lax';
+        try {
+            const response = await fetchUserAuthListFromBilibili();
+            const orgId = response
+                && response.code === 0
+                && response.data
+                && response.data.org_id;
+
+            if (!orgId) {
+                debugWarn('权限接口未返回可用 org_id:', response);
+                return false;
+            }
+
+            document.cookie = `org_id=${encodeURIComponent(orgId)}; domain=.bilibili.com; path=/; max-age=31536000; SameSite=Lax`;
+            debugLog('已写入 org_id Cookie:', orgId);
+            return true;
+        } catch (error) {
+            debugError('获取 org_id 失败:', error);
+            return false;
+        }
     }
 
     // 采集用户信息
@@ -449,8 +479,8 @@
         });
     }
 
-    function fetchAnchorInfoFromBilibili(search, searchType) {
-        ensureOrgIdCookie();
+    async function fetchAnchorInfoFromBilibili(search, searchType) {
+        await ensureOrgIdCookie();
 
         const query = new URLSearchParams({
             search_type: String(searchType),
@@ -468,7 +498,10 @@
     async function checkOfficialApiAvailable() {
         try {
             const response = await fetchAnchorInfoFromBilibili(OFFICIAL_API_CHECK_SEARCH, OFFICIAL_API_CHECK_SEARCH_TYPE);
-            const isAvailable = response && response.code === 0 && String(response.message) === '0';
+            const isAvailable = response
+                && response.code === 0
+                && response.data
+                && Array.isArray(response.data.items);
             if (!isAvailable) {
                 isScriptEnabled = false;
                 debugError('官方API健康检查失败，脚本停止运行:', response);
