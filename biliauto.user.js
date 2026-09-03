@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         B站直播主播信息显示
 // @namespace    http://tampermonkey.net/
-// @version      8
+// @version      9
 // @description  在B站直播页面显示主播签约状态和繁星主播状态，并采集用户信息
 // @author       9
 // @match        https://live.bilibili.com/p/eden/area-tags*
@@ -11,6 +11,8 @@
 // @updateURL    https://raw.githubusercontent.com/c90c90/testttt/main/biliauto.user.js
 // @grant        GM_xmlhttpRequest
 // @grant        GM_info
+// @grant        GM_getValue
+// @grant        GM_setValue
 // @connect      rb.112358.xyz
 // @connect      api.live.bilibili.com
 // @run-at       document-end
@@ -29,8 +31,11 @@
     const AREA_TAGS_SCAN_DEBOUNCE = 300;
     const BILIBILI_API_CONCURRENCY = 1;
     const CARD_QUEUE_START_INTERVAL = 80;
-    const OFFICIAL_API_CHECK_SEARCH_TYPE = 3;
-    const OFFICIAL_API_CHECK_SEARCH = '21452505';
+    const QUERY_PERMISSION_AUTH_ID = 'e983199755d5640a';
+    const QUERY_PERMISSION_SORT_ID = 401070100;
+    const QUERY_PERMISSION_CACHE_KEY_PREFIX = 'mcn_query_permission';
+    const QUERY_PERMISSION_ALLOWED_TTL = 9 * 60 * 60 * 1000;
+    const QUERY_PERMISSION_DENIED_TTL = 10 * 60 * 1000;
     const UPDATE_URL = 'https://raw.githubusercontent.com/c90c90/testttt/main/biliauto.user.js';
     let isScriptEnabled = true;
 
@@ -131,21 +136,28 @@
     }
 
     function fetchUserAuthListFromBilibili() {
+        const orgId = getCookieValue('org_id');
+        const query = new URLSearchParams();
+        if (orgId) {
+            query.set('org_id', orgId);
+        }
+        const queryString = query.toString();
+
         return requestJson({
             debugName: 'B站权限查询',
             method: 'GET',
-            url: 'https://api.live.bilibili.com/xlive/mcn-interface/v1/auth/GetUserAuthList',
+            url: `https://api.live.bilibili.com/xlive/mcn-interface/v1/auth/GetUserAuthList${queryString ? `?${queryString}` : ''}`,
             anonymous: false
         });
     }
 
-    async function ensureOrgIdCookie() {
+    async function ensureOrgIdCookie(authResponse = null) {
         if (hasCookie('org_id')) {
             return true;
         }
 
         try {
-            const response = await fetchUserAuthListFromBilibili();
+            const response = authResponse || await fetchUserAuthListFromBilibili();
             const orgId = response
                 && response.code === 0
                 && response.data
@@ -161,6 +173,116 @@
             return true;
         } catch (error) {
             debugError('获取 org_id 失败:', error);
+            return false;
+        }
+    }
+
+    function getQueryPermissionCacheIdentity(orgId = getCookieValue('org_id')) {
+        return {
+            uid: String(getDedeUserID() || ''),
+            orgId: String(orgId || '')
+        };
+    }
+
+    function getQueryPermissionCacheKey(identity) {
+        const uidPart = encodeURIComponent(identity.uid || 'anonymous');
+        const orgIdPart = encodeURIComponent(identity.orgId || 'no-org');
+        return `${QUERY_PERMISSION_CACHE_KEY_PREFIX}:${uidPart}:${orgIdPart}`;
+    }
+
+    function readQueryPermissionCache(orgId) {
+        const identity = getQueryPermissionCacheIdentity(orgId);
+
+        try {
+            const cached = GM_getValue(getQueryPermissionCacheKey(identity), null);
+            if (!cached || typeof cached !== 'object') {
+                return null;
+            }
+            if (cached.uid !== identity.uid || cached.orgId !== identity.orgId) {
+                return null;
+            }
+            if (typeof cached.allowed !== 'boolean' || !Number.isFinite(cached.expiresAt)) {
+                return null;
+            }
+            if (cached.expiresAt <= Date.now()) {
+                return null;
+            }
+
+            return cached.allowed;
+        } catch (error) {
+            debugWarn('读取查询权限缓存失败:', error);
+            return null;
+        }
+    }
+
+    function writeQueryPermissionCache(allowed, orgId) {
+        const identity = getQueryPermissionCacheIdentity(orgId);
+        const ttl = allowed ? QUERY_PERMISSION_ALLOWED_TTL : QUERY_PERMISSION_DENIED_TTL;
+
+        try {
+            GM_setValue(getQueryPermissionCacheKey(identity), {
+                uid: identity.uid,
+                orgId: identity.orgId,
+                allowed: allowed,
+                expiresAt: Date.now() + ttl
+            });
+        } catch (error) {
+            debugWarn('写入查询权限缓存失败:', error);
+        }
+    }
+
+    async function checkUserQueryPermission() {
+        const currentOrgId = getCookieValue('org_id') || '';
+        const cachedPermission = readQueryPermissionCache(currentOrgId);
+        if (cachedPermission !== null) {
+            if (!cachedPermission) {
+                isScriptEnabled = false;
+                debugError('查询权限缓存为无权限，脚本停止运行');
+                return false;
+            }
+
+            debugLog('查询权限缓存命中');
+            return true;
+        }
+
+        try {
+            const response = await fetchUserAuthListFromBilibili();
+            const responseOrgId = response
+                && response.code === 0
+                && response.data
+                && response.data.org_id
+                ? String(response.data.org_id)
+                : '';
+
+            if (!currentOrgId && responseOrgId) {
+                await ensureOrgIdCookie(response);
+            }
+
+            const authList = response
+                && response.code === 0
+                && response.data
+                && Array.isArray(response.data.auth_list)
+                ? response.data.auth_list
+                : [];
+            const hasPermission = authList.some(auth => auth && (
+                String(auth.auth_id) === QUERY_PERMISSION_AUTH_ID
+                || Number(auth.sort_id) === QUERY_PERMISSION_SORT_ID
+            ));
+            const effectiveOrgId = currentOrgId || responseOrgId;
+
+            writeQueryPermissionCache(hasPermission, effectiveOrgId);
+            if (!hasPermission) {
+                isScriptEnabled = false;
+                debugError('当前账户没有主播查询权限，脚本停止运行:', response);
+                return false;
+            }
+
+            debugLog('主播查询权限检查通过');
+            return true;
+        } catch (error) {
+            writeQueryPermissionCache(false, currentOrgId);
+            isScriptEnabled = false;
+            debugError('主播查询权限检查异常，脚本停止运行:', error);
             return false;
         }
     }
@@ -488,7 +610,10 @@
     }
 
     async function fetchAnchorInfoFromBilibili(search, searchType) {
-        await ensureOrgIdCookie();
+        const hasOrgIdCookie = await ensureOrgIdCookie();
+        if (!hasOrgIdCookie) {
+            throw new Error('无法获取 org_id，已中止 SearchAnchor 请求');
+        }
 
         const query = new URLSearchParams({
             search_type: String(searchType),
@@ -501,28 +626,6 @@
             url: `https://api.live.bilibili.com/xlive/mcn-interface/v1/mcn_mng/SearchAnchor?${query.toString()}`,
             anonymous: false
         });
-    }
-
-    async function checkOfficialApiAvailable() {
-        try {
-            const response = await fetchAnchorInfoFromBilibili(OFFICIAL_API_CHECK_SEARCH, OFFICIAL_API_CHECK_SEARCH_TYPE);
-            const isAvailable = response
-                && response.code === 0
-                && response.data
-                && Array.isArray(response.data.items);
-            if (!isAvailable) {
-                isScriptEnabled = false;
-                debugError('官方API健康检查失败，脚本停止运行:', response);
-                return false;
-            }
-
-            debugLog('官方API健康检查通过');
-            return true;
-        } catch (error) {
-            isScriptEnabled = false;
-            debugError('官方API健康检查异常，脚本停止运行:', error);
-            return false;
-        }
     }
 
     async function queryAnchorInfo(search, searchType, options = {}) {
@@ -1116,7 +1219,7 @@
             return;
         }
 
-        await checkOfficialApiAvailable();
+        await checkUserQueryPermission();
         if (!isScriptEnabled) {
             return;
         }
